@@ -31,8 +31,19 @@ jobs:
       - name: Install Android SDK and Rust
         run: |
           set -euo pipefail
-          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          sdk="$RUNNER_TEMP/android-sdk"
+          cli="$RUNNER_TEMP/android-commandline-tools.zip"
+          mkdir -p "$sdk"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+            -o "$cli"
+          printf '%s  %s\n' '2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258' "$cli" | sha256sum --check
+          unzip -q "$cli" -d "$sdk"
+          sdkmanager="$sdk/cmdline-tools/bin/sdkmanager"
+          "$sdkmanager" --sdk_root="$sdk" --licenses < <(yes) > /dev/null
+          "$sdkmanager" --sdk_root="$sdk" 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\nANDROID_NDK_HOME=%s\n' \
+            "$sdk" "$sdk" "$sdk/ndk/27.2.12479018" >> "$GITHUB_ENV"
           rustup toolchain install 1.85.1 --profile minimal --target aarch64-linux-android
       - name: Test Rust and check the translation script
         run: |
