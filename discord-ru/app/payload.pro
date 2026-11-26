@@ -1,0 +1,3 @@
+-keep class dev.discordru.StartupProvider { *; }
+-keep class * implements com.google.firebase.components.ComponentRegistrar { public <init>(); }
+-repackageclasses dev.discordru.internal

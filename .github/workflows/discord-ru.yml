@@ -1,0 +1,82 @@
+name: Build Discord RU APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [discord-ru-355-10]
+    paths:
+      - .github/workflows/discord-ru.yml
+      - discord-ru/**
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android SDK components
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Download verified Discord 355010 splits and APKEditor
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/discord-splits"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar \
+            -o APKEditor-1.4.9.jar
+          for split in base config.arm64_v8a config.en config.xxhdpi; do
+            path="/tracker/download/355010/$split"
+            curl --fail --silent --show-error --location --retry 3 --max-time 180 \
+              "https://tracker.vendetta.rocks$path" -o "discord-splits/$split.apk" ||
+            curl --fail --silent --show-error --location --retry 3 --max-time 180 \
+              "https://proxy.vd.ushie.dev$path" -o "discord-splits/$split.apk"
+          done
+          sha256sum --check <<'CHECKSUMS'
+          a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  APKEditor-1.4.9.jar
+          9d13ad9fba00dc249ad0f76c5ee6c542f751ebbb9f459c0ac1c19910ecc380e3  discord-splits/base.apk
+          7dbaab9b569c7c721c1f39f7bd169fcd12414be17c4bd44e1384909e612bc417  discord-splits/config.arm64_v8a.apk
+          af877cbff30bf0e327845eaa354b15017b65137f73e6d7c1fcb7083b696bd0ed  discord-splits/config.en.apk
+          8a62eed38a796f41cfab273c963daa58c3b3b1048ca4aa9a235ab8405e91633a  discord-splits/config.xxhdpi.apk
+          CHECKSUMS
+      - name: Build and verify arm64 APK
+        env:
+          DISCORD_RU_KEYSTORE_BASE64: ${{ secrets.DISCORD_RU_KEYSTORE_BASE64 }}
+          DISCORD_RU_KEYSTORE_PASSWORD: ${{ secrets.DISCORD_RU_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keystore="$RUNNER_TEMP/discordru.p12"
+          trap 'rm -f "$keystore"' EXIT
+          if [[ -n "$DISCORD_RU_KEYSTORE_BASE64" && -n "$DISCORD_RU_KEYSTORE_PASSWORD" ]]; then
+            printf '%s' "$DISCORD_RU_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          elif [[ -z "$DISCORD_RU_KEYSTORE_BASE64" && -z "$DISCORD_RU_KEYSTORE_PASSWORD" ]]; then
+            DISCORD_RU_KEYSTORE_PASSWORD="$(openssl rand -hex 24)"
+            echo "::add-mask::$DISCORD_RU_KEYSTORE_PASSWORD"
+            export DISCORD_RU_KEYSTORE_PASSWORD
+            keytool -genkeypair -keystore "$keystore" -alias discordru -keyalg RSA \
+              -keysize 3072 -validity 10000 -dname "CN=Discord RU CI Test Build" \
+              -storepass:env DISCORD_RU_KEYSTORE_PASSWORD
+            echo "::notice::Signed with a temporary test key."
+          else
+            echo "::error::Set both Discord RU signing secrets, or leave both unset for a test build."
+            exit 1
+          fi
+          printf '%s\n' "$DISCORD_RU_KEYSTORE_PASSWORD" | discord-ru/tools/build-apk.sh \
+            "$RUNNER_TEMP/discord-splits" "$RUNNER_TEMP/APKEditor-1.4.9.jar" \
+            "$keystore" dist/Discord-RU-355.10-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Discord-RU-355.10-arm64
+          path: dist/Discord-RU-355.10-arm64.apk
+          if-no-files-found: error
+          compression-level: 0
