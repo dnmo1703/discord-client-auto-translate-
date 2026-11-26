@@ -17,6 +17,8 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -36,7 +38,9 @@ public final class ProxyActivity extends Activity {
 
     private final ExecutorService checks = Executors.newSingleThreadExecutor();
     private ProxySettings settings;
-    private EditText address;
+    private LoopbackProxy.Protocol protocol;
+    private EditText host;
+    private EditText port;
     private EditText username;
     private EditText password;
     private TextView status;
@@ -47,6 +51,7 @@ public final class ProxyActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         settings = new ProxySettings(this);
+        protocol = settings.protocol();
         setTitle("Прокси");
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                 | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
@@ -105,15 +110,34 @@ public final class ProxyActivity extends Activity {
         append(summary, status, 2);
         refreshStatus();
 
+        LinearLayout types = panel();
+        append(content, types, 16);
+        TextView typeTitle = text("Тип прокси", 17, TEXT);
+        typeTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        types.addView(typeTitle);
+        RadioGroup choices = new RadioGroup(this);
+        choices.setOrientation(RadioGroup.VERTICAL);
+        append(types, choices, 4);
+        int socks = addProtocol(choices, protocolLabel(LoopbackProxy.Protocol.SOCKS5));
+        int http = addProtocol(choices, protocolLabel(LoopbackProxy.Protocol.HTTP));
+        int https = addProtocol(choices, protocolLabel(LoopbackProxy.Protocol.HTTPS));
+        switch (protocol) {
+            case SOCKS5: choices.check(socks); break;
+            case HTTP: choices.check(http); break;
+            case HTTPS: choices.check(https); break;
+        }
+
         LinearLayout server = panel();
         append(content, server, 16);
-        TextView serverTitle = text("Внешний HTTPS-прокси", 17, TEXT);
+        TextView serverTitle = text("Сервер", 17, TEXT);
         serverTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         server.addView(serverTitle);
-        append(server, text("Оставьте адрес пустым, чтобы использовать сеть телефона.", 14, MUTED), 6);
-        address = field(server, "Адрес сервера", "proxy.example.org:443", settings.address(),
+        append(server, text("Можно указать 127.0.0.1 для прокси, запущенного на телефоне. Пустой адрес использует сеть телефона.", 14, MUTED), 6);
+        host = field(server, "Адрес", "127.0.0.1", settings.host(),
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        username = field(server, "Имя пользователя", "", settings.username(), InputType.TYPE_CLASS_TEXT);
+        port = field(server, "Порт", Integer.toString(protocol.defaultPort), settings.port(),
+                InputType.TYPE_CLASS_NUMBER);
+        username = field(server, "Имя пользователя", "Необязательно", settings.username(), InputType.TYPE_CLASS_TEXT);
         password = field(server, "Пароль", passwordHint(), "",
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         password.setSaveEnabled(false);
@@ -141,24 +165,41 @@ public final class ProxyActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
                 revision++;
+                password.setHint(passwordHint());
                 message("", MUTED);
             }
             @Override public void afterTextChanged(Editable text) { }
         };
-        address.addTextChangedListener(edits);
+        host.addTextChangedListener(edits);
+        port.addTextChangedListener(edits);
         username.addTextChangedListener(edits);
         password.addTextChangedListener(edits);
+        choices.setOnCheckedChangeListener((group, checked) -> {
+            if (checked == socks) protocol = LoopbackProxy.Protocol.SOCKS5;
+            else if (checked == http) protocol = LoopbackProxy.Protocol.HTTP;
+            else protocol = LoopbackProxy.Protocol.HTTPS;
+            port.setHint(Integer.toString(protocol.defaultPort));
+            password.setHint(passwordHint());
+            revision++;
+            message("", MUTED);
+        });
         content.requestFocus();
     }
 
     private void saveServer() {
-        ProxySettings.Server server = enteredServer();
-        if (server == null) return;
-        settings.save(server);
+        LoopbackProxy.Relay relay;
+        try {
+            relay = enteredRelay();
+        } catch (IllegalArgumentException error) {
+            message(error.getMessage(), ERROR);
+            return;
+        }
+        settings.save(protocol, relay);
         LoopbackProxy proxy = StartupProvider.proxy();
-        if (proxy != null) proxy.setRelay(server.relay);
-        address.setText(server.address);
-        username.setText(server.username);
+        if (proxy != null) proxy.setRelay(relay);
+        host.setText(settings.host());
+        port.setText(settings.port());
+        username.setText(settings.username());
         password.setText("");
         password.setHint(passwordHint());
         refreshStatus();
@@ -166,15 +207,20 @@ public final class ProxyActivity extends Activity {
     }
 
     private void checkConnection() {
-        ProxySettings.Server server = enteredServer();
-        if (server == null) return;
+        LoopbackProxy.Relay relay;
+        try {
+            relay = enteredRelay();
+        } catch (IllegalArgumentException error) {
+            message(error.getMessage(), ERROR);
+            return;
+        }
         int requested = revision;
         check.setEnabled(false);
         message("Проверяем доступ к Discord…", MUTED);
         checks.execute(() -> {
             boolean reachable;
             try {
-                LoopbackProxy.checkConnection(server.relay);
+                LoopbackProxy.checkConnection(relay);
                 reachable = true;
             } catch (IOException error) {
                 reachable = false;
@@ -186,23 +232,18 @@ public final class ProxyActivity extends Activity {
                 if (revision != requested) return;
                 if (success) {
                     message("Подключение к Discord прошло проверку.", SUCCESS);
-                } else if (server.relay == null) {
+                } else if (relay == null) {
                     message("Не удалось подключиться к Discord через сеть телефона.", ERROR);
                 } else {
-                    message("Не удалось подключиться через прокси. Проверьте адрес, данные входа и сертификат сервера.", ERROR);
+                    message("Не удалось подключиться через прокси. Проверьте тип, адрес, порт и данные входа.", ERROR);
                 }
             });
         });
     }
 
-    private ProxySettings.Server enteredServer() {
-        try {
-            return settings.readServer(address.getText().toString(), username.getText().toString(),
-                    password.getText().toString());
-        } catch (IllegalArgumentException error) {
-            message(error.getMessage(), ERROR);
-            return null;
-        }
+    private LoopbackProxy.Relay enteredRelay() {
+        return settings.readRelay(protocol, host.getText().toString(), port.getText().toString(),
+                username.getText().toString(), password.getText().toString());
     }
 
     private void refreshStatus() {
@@ -212,14 +253,18 @@ public final class ProxyActivity extends Activity {
         } else if (proxy == null) {
             status.setText("Локальный прокси не запустился.");
         } else {
-            String address = settings.address();
+            LoopbackProxy.Relay relay = settings.savedRelay();
             status.setText("Локальный адрес  127.0.0.1:" + proxy.port() + "\n"
-                    + (address.isEmpty() ? "Подключение через сеть телефона" : "Внешний сервер  " + address));
+                    + (relay == null ? "Подключение через сеть телефона"
+                            : protocolLabel(relay.protocol) + "  " + relay.host + ":" + relay.port));
         }
     }
 
     private String passwordHint() {
-        return settings.hasPassword() ? "Сохранён" : "";
+        boolean saved = settings.hasPassword()
+                && settings.storedEndpoint(protocol, host.getText().toString(), port.getText().toString())
+                && username.getText().toString().trim().equals(settings.username());
+        return saved ? "Сохранён" : "Необязательно";
     }
 
     private void message(String value, int color) {
@@ -242,6 +287,21 @@ public final class ProxyActivity extends Activity {
         input.setText(value);
         append(parent, input, 2);
         return input;
+    }
+
+    private int addProtocol(RadioGroup group, String label) {
+        RadioButton option = new RadioButton(this);
+        option.setId(View.generateViewId());
+        option.setMinHeight(dp(48));
+        option.setText(label);
+        option.setTextColor(TEXT);
+        option.setTextSize(16);
+        group.addView(option, new RadioGroup.LayoutParams(-1, -2));
+        return option.getId();
+    }
+
+    private static String protocolLabel(LoopbackProxy.Protocol protocol) {
+        return protocol == LoopbackProxy.Protocol.SOCKS5 ? "SOCKS5" : protocol.name() + " CONNECT";
     }
 
     private LinearLayout column() {
