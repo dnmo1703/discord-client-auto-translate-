@@ -35,7 +35,7 @@ public final class StartupProvider extends ContentProvider {
             local.setEnabled(settings.enabled());
             local.configureClients();
             proxy = local;
-        } catch (IOException | SecurityException error) {
+        } catch (IOException | SecurityException | LinkageError error) {
             Log.w("DiscordRU", "Could not start the local proxy", error);
         }
         application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {

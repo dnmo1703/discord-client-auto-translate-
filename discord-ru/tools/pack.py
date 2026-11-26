@@ -23,7 +23,7 @@ with ZipFile(host_path) as host, ZipFile(payload_path) as payload, ZipFile(outpu
     for info in host.infolist():
         if info.filename in ("AndroidManifest.xml", "resources.arsc") or signature.fullmatch(info.filename):
             continue
-        if info.filename == "classes.dex":
+        if info.filename in ("classes.dex", "classes3.dex"):
             output.write(patch_dir / info.filename, info.filename, ZIP_STORED)
         elif not info.filename.startswith("assets/dexopt/"):
             copy(host, info, output)

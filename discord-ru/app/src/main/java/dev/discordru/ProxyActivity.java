@@ -149,6 +149,9 @@ public final class ProxyActivity extends Activity {
         check = button("Проверить подключение", false);
         append(content, check, 8);
         check.setOnClickListener(view -> checkConnection());
+        Button translation = button(getString(R.string.translation_server_label), false);
+        append(content, translation, 8);
+        translation.setOnClickListener(view -> TranslationSettings.edit(this));
         feedback = text("", 14, MUTED);
         feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         append(content, feedback, 8);
@@ -218,24 +221,26 @@ public final class ProxyActivity extends Activity {
         check.setEnabled(false);
         message("Проверяем доступ к Discord…", MUTED);
         checks.execute(() -> {
-            boolean reachable;
+            String failure;
             try {
                 LoopbackProxy.checkConnection(relay);
-                reachable = true;
+                failure = null;
             } catch (IOException error) {
-                reachable = false;
+                failure = error.getMessage();
+            } catch (LinkageError error) {
+                failure = "Не удалось запустить локальный прокси.";
             }
-            boolean success = reachable;
+            final String issue = failure;
             runOnUiThread(() -> {
                 if (isDestroyed()) return;
                 check.setEnabled(true);
                 if (revision != requested) return;
-                if (success) {
+                if (issue == null) {
                     message("Подключение к Discord прошло проверку.", SUCCESS);
                 } else if (relay == null) {
                     message("Не удалось подключиться к Discord через сеть телефона.", ERROR);
                 } else {
-                    message("Не удалось подключиться через прокси. Проверьте тип, адрес, порт и данные входа.", ERROR);
+                    message("Не удалось подключиться через прокси. " + issue, ERROR);
                 }
             });
         });

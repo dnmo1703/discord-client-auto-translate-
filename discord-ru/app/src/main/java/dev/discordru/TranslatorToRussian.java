@@ -1,62 +1,32 @@
 package dev.discordru;
 
-import com.google.mlkit.nl.languageid.LanguageIdentification;
-import com.google.mlkit.nl.languageid.LanguageIdentifier;
-import com.google.mlkit.nl.translate.TranslateLanguage;
-import com.google.mlkit.nl.translate.Translation;
-import com.google.mlkit.nl.translate.Translator;
-import com.google.mlkit.nl.translate.TranslatorOptions;
+import android.os.Handler;
+import android.os.Looper;
+
+import java.io.IOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 final class TranslatorToRussian {
-    static void translate(String text, Consumer<String> status, Consumer<String> success,
-                          Consumer<String> failure) {
-        LanguageIdentifier identifier;
-        try {
-            identifier = LanguageIdentification.getClient();
-        } catch (RuntimeException error) {
-            failure.accept("Не удалось запустить определение языка.");
-            return;
-        }
-        identifier.identifyLanguage(text).addOnCompleteListener(task -> {
-            identifier.close();
-            if (!task.isSuccessful()) {
-                failure.accept("Не удалось определить язык.");
-                return;
+    private static final ExecutorService REQUESTS = Executors.newFixedThreadPool(2);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+
+    static void translate(TranslationSettings.Server server, String text,
+                          Consumer<String> success, Consumer<String> failure) {
+        REQUESTS.execute(() -> {
+            try {
+                System.loadLibrary("discordru_native");
+                String translated = nativeTranslate(server.endpoint, server.key, text);
+                MAIN.post(() -> success.accept(translated));
+            } catch (IOException error) {
+                MAIN.post(() -> failure.accept(error.getMessage()));
+            } catch (LinkageError error) {
+                MAIN.post(() -> failure.accept("Не удалось запустить перевод."));
             }
-            String source = TranslateLanguage.fromLanguageTag(task.getResult());
-            if (source == null) {
-                failure.accept("Язык не распознан или недоступен для перевода.");
-                return;
-            }
-            if (TranslateLanguage.RUSSIAN.equals(source)) {
-                success.accept(text);
-                return;
-            }
-            downloadAndTranslate(text, source, status, success, failure);
         });
     }
 
-    private static void downloadAndTranslate(String text, String source, Consumer<String> status,
-                                             Consumer<String> success, Consumer<String> failure) {
-        Translator translator;
-        try {
-            translator = Translation.getClient(new TranslatorOptions.Builder()
-                    .setSourceLanguage(source).setTargetLanguage(TranslateLanguage.RUSSIAN).build());
-        } catch (RuntimeException error) {
-            failure.accept("Не удалось запустить перевод.");
-            return;
-        }
-        status.accept("Подготавливаем модель. При первой загрузке нужен интернет…");
-        translator.downloadModelIfNeeded()
-                .onSuccessTask(unused -> {
-                    status.accept("Переводим…");
-                    return translator.translate(text);
-                })
-                .addOnCompleteListener(task -> {
-                    translator.close();
-                    if (task.isSuccessful()) success.accept(task.getResult());
-                    else failure.accept("Перевод не удался. Если модель ещё не скачана, проверьте интернет и повторите.");
-                });
-    }
+    private static native String nativeTranslate(String endpoint, String key, String text)
+            throws IOException;
 }

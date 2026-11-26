@@ -37,8 +37,12 @@ jobs:
           unzip -q "$cli" -d "$sdk"
           sdkmanager="$sdk/cmdline-tools/bin/sdkmanager"
           "$sdkmanager" --sdk_root="$sdk" --licenses < <(yes) > /dev/null
-          "$sdkmanager" --sdk_root="$sdk" 'platforms;android-35' 'build-tools;35.0.0'
+          "$sdkmanager" --sdk_root="$sdk" 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
           printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal --target aarch64-linux-android
+      - name: Test the Rust backend
+        run: cargo +1.85.1 test --locked --manifest-path discord-ru/native/Cargo.toml
       - name: Download verified Discord 355010 splits and APKEditor
         run: |
           set -euo pipefail

@@ -12,6 +12,7 @@ android {
     androidResources {
         additionalParameters '--allow-reserved-package-id', '--package-id', '0x78'
     }
+    sourceSets.main.jniLibs.srcDirs += [layout.buildDirectory.dir("generated/rustJniLibs")]
     buildFeatures {
         buildConfig = false
     }
@@ -25,8 +26,4 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-}
-dependencies {
-    implementation 'com.google.mlkit:translate:17.0.3'
-    implementation 'com.google.mlkit:language-id:17.0.6'
 }

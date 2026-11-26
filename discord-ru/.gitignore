@@ -5,3 +5,5 @@ local.properties
 *.jks
 *.p12
 __pycache__/
+
+/native/target/

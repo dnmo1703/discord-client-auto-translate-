@@ -87,12 +87,16 @@ public final class InlineTranslation {
                 return;
             }
 
+            TranslationSettings.Server server = TranslationSettings.read(getContext());
+            if (server.endpoint.isEmpty()) {
+                TranslationSettings.edit(getContext());
+                return;
+            }
             long currentBinding = binding;
             WeakReference<MessageRow> row = new WeakReference<>(this);
             translate.setEnabled(false);
-            showResult("Определяем язык…");
-            TranslatorToRussian.translate(source,
-                    status -> apply(row, currentBinding, view -> view.showResult(status)),
+            showResult("Переводим…");
+            TranslatorToRussian.translate(server, source,
                     translated -> apply(row, currentBinding, view -> {
                         view.translation = translated;
                         view.showResult(translated.equals(view.source)

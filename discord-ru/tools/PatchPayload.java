@@ -32,6 +32,10 @@ public final class PatchPayload {
                     dex.getDexClasses().forEachRemaining(cls -> hostTypes.add(cls.getKey()));
                     if ("classes.dex".equals(entry.getName())) {
                         patchMessageHolder(dex);
+                    } else if ("classes3.dex".equals(entry.getName())) {
+                        patchDiscordProxySelector(dex);
+                    }
+                    if ("classes.dex".equals(entry.getName()) || "classes3.dex".equals(entry.getName())) {
                         Path patched = output.resolve(entry.getName());
                         dex.write(patched.toFile());
                         DexFile.read(patched.toFile());
@@ -95,6 +99,18 @@ public final class PatchPayload {
             hostTable.refreshFull();
             hostTable.writeBytes(output.resolve("resources.arsc").toFile());
         }
+    }
+
+    private static void patchDiscordProxySelector(DexFile dex) {
+        var client = dex.getDexClass(TypeKey.of("Lb80/g0;"));
+        var constructor = client.getDeclaredMethod(MethodKey.parse("Lb80/g0;-><init>(Lb80/f0;)V"));
+        var getDefault = MethodKey.parse("Ljava/net/ProxySelector;->getDefault()Ljava/net/ProxySelector;");
+        var calls = constructor.getInstructionsIfMethodKey(getDefault::equals);
+        if (!calls.hasNext()) throw new IllegalStateException("Discord network client proxy selector is missing");
+        var call = calls.next();
+        if (calls.hasNext()) throw new IllegalStateException("Ambiguous Discord network client proxy selector");
+        call.setKey(MethodKey.parse("Ldev/discordru/LoopbackProxy;->clientSelector()Ljava/net/ProxySelector;"));
+        dex.refreshFull();
     }
 
     private static void patchMessageHolder(DexFile dex) throws Exception {
