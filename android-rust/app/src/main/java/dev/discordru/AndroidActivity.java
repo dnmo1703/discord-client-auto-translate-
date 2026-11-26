@@ -32,7 +32,6 @@ public final class AndroidActivity extends Activity {
     private final ExecutorService proxyWorker = Executors.newSingleThreadExecutor();
     ProxySettings preferences;
     private LinearLayout root;
-    private DiscordWeb web;
     private NativeChat chat;
     private LoopbackProxy local;
     private Runnable back;
@@ -43,39 +42,21 @@ public final class AndroidActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         preferences = new ProxySettings(this);
-        home();
-    }
-
-    private void home() {
-        LinearLayout body = page("Discord RU", this::finish, "Настройки", () -> settings(this::home));
-        body.setGravity(Gravity.CENTER_VERTICAL);
-        body.setPadding(dp(24), dp(20), dp(24), dp(20));
-        TextView title = label("Ваши чаты", 34, TEXT);
-        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        body.addView(title);
-        add(body, label("Discord для Android с переводом сообщений на русский.", 16, MUTED), 8);
-        add(body, action("Войти в Discord", true, this::openWeb), 24);
-        add(body, action("Чаты сервера через бота", false, this::openChat), 10);
-    }
-
-    private void openWeb() {
-        if (web == null) web = new DiscordWeb(this);
-        web.show();
-    }
-
-    private void openChat() {
-        if (chat == null) chat = new NativeChat(this);
+        chat = new NativeChat(this);
         chat.show();
     }
 
     void settings(Runnable returnTo) {
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout body = page("Настройки", returnTo, null, null);
         body.setPadding(dp(20), dp(16), dp(20), dp(20));
         add(body, action("Прокси  ›", false, () -> new ProxyScreen(this).show(() -> settings(returnTo))), 0);
+
         add(body, label("При нажатии «Перевести» текст сообщения отправляется в Google Переводчик.", 15, MUTED), 24);
+        if (chat.signedIn()) add(body, action("Выйти из аккаунта", false, chat::logout), 24);
     }
 
-    Runnable homeAction() { return this::home; }
+    Runnable closeAction() { return this::finish; }
 
     LinearLayout page(String title, Runnable up, String action, Runnable onAction) {
         back = up;
@@ -189,7 +170,6 @@ public final class AndroidActivity extends Activity {
 
     @Override protected void onDestroy() {
         closed = true;
-        if (web != null) web.destroy();
         if (chat != null) chat.leave();
         chatWorker.shutdownNow();
         translationWorker.shutdownNow();

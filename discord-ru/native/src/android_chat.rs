@@ -4,7 +4,7 @@ use jni::{
     objects::{JClass, JString},
     sys::{jint, jstring},
 };
-use reqwest::{Client, Method, Proxy, redirect::Policy};
+use reqwest::{Client, Method, Proxy, StatusCode, header::HeaderValue, redirect::Policy};
 use serde_json::{Value, json};
 use std::{
     ptr,
@@ -26,9 +26,7 @@ fn client(port: i32, revision: i32) -> Result<Client, String> {
         .no_proxy()
         .https_only(true)
         .redirect(Policy::none())
-        .user_agent(
-            "DiscordBot (https://github.com/dnmo1703/discord-client-auto-translate-, 0.1.0)",
-        )
+        .user_agent("Discord RU Native Android/0.2.0")
         .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(22));
     if (1..=65535).contains(&port) {
@@ -51,25 +49,133 @@ fn snowflake(value: &str) -> Result<&str, String> {
         .ok_or_else(|| "Неверный идентификатор Discord.".into())
 }
 
+enum ApiError {
+    Expired,
+    Notice(String),
+}
+
+impl From<&str> for ApiError {
+    fn from(value: &str) -> Self {
+        Self::Notice(value.into())
+    }
+}
+
+impl From<String> for ApiError {
+    fn from(value: String) -> Self {
+        Self::Notice(value)
+    }
+}
+
+fn auth_reply(operation: &str, status: StatusCode, body: &Value) -> Result<Value, ApiError> {
+    if body.get("captcha_key").is_some() || body.get("captcha_sitekey").is_some() {
+        return Err(
+            "Discord потребовал CAPTCHA. Эта сборка не может продолжить такой вход.".into(),
+        );
+    }
+    let code = body["code"].as_u64();
+    match code {
+        Some(70007) => return Err("Discord запросил подтверждение телефона. Подтвердите вход в официальном приложении Discord и повторите попытку.".into()),
+        Some(70008) => return Err("Подтвердите попытку входа по письму Discord, затем попробуйте снова.".into()),
+        Some(60008 | 60009) => return Err("Код подтверждения неверен или устарел.".into()),
+        _ => {}
+    }
+    if !status.is_success() {
+        return Err(
+            if operation == "login" && matches!(status.as_u16(), 400 | 401) {
+                "Discord отклонил вход. Проверьте электронную почту и пароль."
+            } else if status.as_u16() == 429 {
+                "Discord ограничил число попыток. Попробуйте позже."
+            } else if status.as_u16() == 403 {
+                "Discord запретил вход для этого аккаунта или подключения."
+            } else {
+                "Discord не принял подтверждение входа."
+            }
+            .into(),
+        );
+    }
+    if body["required_actions"]
+        .as_array()
+        .is_some_and(|actions| !actions.is_empty())
+    {
+        return Err("Discord требует дополнительного действия для аккаунта. Выполните его в официальном приложении Discord.".into());
+    }
+    if operation == "sms_send" && body["phone"].is_string() {
+        return Ok(json!({"state": "sms_sent"}));
+    }
+    if body["mfa"] == true {
+        let ticket = body["ticket"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or("Discord не вернул данные для двухфакторного входа.")?;
+        let totp = body["totp"].as_bool().unwrap_or(false);
+        let sms = body["sms"].as_bool().unwrap_or(false);
+        let backup = body["backup"].as_bool().unwrap_or(false);
+        if !(totp || sms || backup) {
+            return Err("Этот способ подтверждения входа пока не поддерживается.".into());
+        }
+        return Ok(
+            json!({"state": "mfa", "ticket": ticket, "totp": totp, "sms": sms, "backup": backup}),
+        );
+    }
+    let token = body["token"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("Discord не завершил вход.")?;
+    Ok(json!({"state": "ready", "token": token}))
+}
+
 async fn request(
     http: Client,
     operation: &str,
     token: &str,
     id: &str,
     value: &str,
-) -> Result<Value, String> {
-    let token = token.trim();
-    if operation != "check"
-        && (token.is_empty()
-            || token.len() > 512
-            || token.bytes().any(|byte| byte.is_ascii_whitespace()))
-    {
-        return Err("Введите токен вашего бота.".into());
+) -> Result<Value, ApiError> {
+    let auth = matches!(operation, "login" | "totp" | "sms" | "backup" | "sms_send");
+    let mut header = None;
+    if !auth && operation != "check" {
+        if token.is_empty() {
+            return Err(ApiError::Expired);
+        }
+        let mut credential = HeaderValue::from_str(token).map_err(|_| ApiError::Expired)?;
+        credential.set_sensitive(true);
+        header = Some(credential);
     }
     let (method, path, body) = match operation {
         "check" => (Method::GET, "/gateway".into(), None),
+        "login" => {
+            if id.is_empty() || value.is_empty() || id.len() > 320 || value.len() > 300 {
+                return Err("Введите электронную почту или номер телефона и пароль.".into());
+            }
+            (
+                Method::POST,
+                "/auth/login".into(),
+                Some(json!({"login": id, "password": value})),
+            )
+        }
+        "totp" | "sms" | "backup" => {
+            if id.is_empty() || id.len() > 4096 || value.is_empty() || value.len() > 32 {
+                return Err("Введите действующий код подтверждения.".into());
+            }
+            (
+                Method::POST,
+                format!("/auth/mfa/{operation}"),
+                Some(json!({"ticket": id, "code": value})),
+            )
+        }
+        "sms_send" => {
+            if id.is_empty() || id.len() > 4096 {
+                return Err("Войдите в аккаунт, чтобы запросить код.".into());
+            }
+            (
+                Method::POST,
+                "/auth/mfa/sms/send".into(),
+                Some(json!({"ticket": id})),
+            )
+        }
         "account" => (Method::GET, "/users/@me".into(), None),
         "guilds" => (Method::GET, "/users/@me/guilds?limit=200".into(), None),
+        "private" => (Method::GET, "/users/@me/channels".into(), None),
         "channels" => (
             Method::GET,
             format!("/guilds/{}/channels", snowflake(id)?),
@@ -89,14 +195,14 @@ async fn request(
             (
                 Method::POST,
                 format!("/channels/{}/messages", snowflake(id)?),
-                Some(json!({"content": value, "allowed_mentions": {"parse": []}})),
+                Some(json!({"content": value, "allowed_mentions": {"parse": ["users"]}})),
             )
         }
         _ => return Err("Неизвестная операция.".into()),
     };
     let mut req = http.request(method, format!("{API}{path}"));
-    if operation != "check" {
-        req = req.header("Authorization", format!("Bot {token}"));
+    if let Some(credential) = header {
+        req = req.header("Authorization", credential);
     }
     if let Some(body) = body {
         req = req.json(&body);
@@ -108,16 +214,28 @@ async fn request(
             "Не удалось подключиться к Discord. Проверьте сеть и настройки прокси."
         }
     })?;
-    match response.status().as_u16() {
-        200..=299 => {}
-        401 => return Err("Discord отклонил токен бота.".into()),
-        403 => return Err("У бота нет разрешения на это действие.".into()),
-        404 => return Err("Канал или сервер недоступен.".into()),
-        429 => return Err("Discord ограничил частоту запросов. Попробуйте позже.".into()),
-        status => return Err(format!("Discord вернул HTTP {status}.")),
+    let status = response.status();
+    if !auth {
+        match status.as_u16() {
+            200..=299 => {}
+            401 => return Err(ApiError::Expired),
+            403 => return Err("У аккаунта нет доступа к этому действию.".into()),
+            404 => return Err("Канал или сервер недоступен.".into()),
+            429 => return Err("Discord ограничил частоту запросов. Попробуйте позже.".into()),
+            code => return Err(format!("Discord вернул HTTP {code}.").into()),
+        }
     }
-    // Cap the response before parsing it.
-    let mut response = response;
+    let body = read_response(response).await?;
+    if auth {
+        return auth_reply(operation, status, &body);
+    }
+    if matches!(operation, "guilds" | "private" | "channels" | "messages") && !body.is_array() {
+        return Err("Discord вернул неизвестный формат.".into());
+    }
+    Ok(body)
+}
+
+async fn read_response(mut response: reqwest::Response) -> Result<Value, ApiError> {
     let mut data = Vec::new();
     while let Some(chunk) = response
         .chunk()
@@ -129,15 +247,13 @@ async fn request(
         }
         data.extend_from_slice(&chunk);
     }
-    let decoded: Value =
-        serde_json::from_slice(&data).map_err(|_| "Discord вернул неизвестный формат.")?;
-    if operation == "account" && decoded["bot"].as_bool() != Some(true) {
-        return Err("Нужен токен приложения Discord с ботом.".into());
-    }
-    if matches!(operation, "guilds" | "channels" | "messages") && !decoded.is_array() {
-        return Err("Discord вернул неизвестный формат.".into());
-    }
-    Ok(decoded)
+    serde_json::from_slice(&data).map_err(|_| {
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            "Discord ограничил частоту запросов. Попробуйте позже.".into()
+        } else {
+            "Discord вернул неизвестный формат.".into()
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -162,9 +278,19 @@ pub extern "system" fn Java_dev_discordru_AndroidCore_discord(
             .block_on(request(http, &operation, &token, &id, &value))?;
         env.new_string(result.to_string())
             .map(JString::into_raw)
-            .map_err(|_| "Не удалось показать ответ Discord.".into())
+            .map_err(|_| ApiError::from("Не удалось показать ответ Discord."))
     })();
-    or_throw(&mut env, result, ptr::null_mut())
+    match result {
+        Ok(value) => value,
+        Err(ApiError::Notice(message)) => or_throw(&mut env, Err(message), ptr::null_mut()),
+        Err(ApiError::Expired) => {
+            let _ = env.throw_new(
+                "dev/discordru/SessionExpiredException",
+                "Сеанс Discord завершён. Войдите снова.",
+            );
+            ptr::null_mut()
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -187,7 +313,7 @@ pub extern "system" fn Java_dev_discordru_AndroidCore_translate(
 
 #[cfg(test)]
 mod tests {
-    use super::snowflake;
+    use super::{ApiError, StatusCode, auth_reply, json, snowflake};
 
     #[test]
     fn route_parameters_only_accept_positive_decimal_snowflakes() {
@@ -205,6 +331,35 @@ mod tests {
             "18446744073709551616",
         ] {
             assert!(snowflake(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn login_only_accepts_a_completed_session_or_supported_second_factor() {
+        let mfa = json!({"mfa": true, "ticket": "example", "totp": true});
+        let Ok(result) = auth_reply("login", StatusCode::OK, &mfa) else {
+            panic!("MFA required")
+        };
+        assert_eq!(
+            result,
+            json!({"state": "mfa", "ticket": "example", "totp": true, "sms": false, "backup": false})
+        );
+
+        let Ok(result) = auth_reply("totp", StatusCode::OK, &json!({"token": "example"})) else {
+            panic!("expected authenticated session")
+        };
+        assert_eq!(result, json!({"state": "ready", "token": "example"}));
+
+        for response in [
+            json!({"token": "example", "captcha_key": ["captcha-required"]}),
+            json!({"token": "example", "required_actions": ["VERIFY_EMAIL"]}),
+            json!({"mfa": true, "ticket": "example", "webauthn": true}),
+            json!({"suspended_user_token": "example"}),
+        ] {
+            assert!(matches!(
+                auth_reply("login", StatusCode::OK, &response),
+                Err(ApiError::Notice(_))
+            ));
         }
     }
 }

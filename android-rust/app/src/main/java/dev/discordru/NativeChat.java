@@ -4,6 +4,11 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.method.PasswordTransformationMethod;
+import android.view.WindowManager;
+import android.widget.AdapterView;
+import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
@@ -33,7 +38,9 @@ final class NativeChat {
     private final Runnable poll = this::poll;
     private final List<JSONObject> messages = new ArrayList<>();
     private final HashMap<String, Translation> translations = new HashMap<>();
+    private final DeviceSession session;
     private String token = "";
+    private boolean restored;
     private int screen;
     private TextView notice;
     private ListView list;
@@ -42,58 +49,260 @@ final class NativeChat {
     private boolean fetching;
     private boolean canLoadOlder;
 
-    NativeChat(AndroidActivity app) { this.app = app; }
+    NativeChat(AndroidActivity app) {
+        this.app = app;
+        session = new DeviceSession(app);
+    }
 
     void show() {
-        if (token.isEmpty()) login(); else guilds();
+        if (restored) {
+            if (token.isEmpty()) login(); else privateChats();
+            return;
+        }
+        page("Discord RU", app.closeAction(), this::show);
+        status("Открываю сеанс…");
+        int opened = screen;
+        app.chatWorker.execute(() -> {
+            String stored = session.read();
+            app.post(() -> {
+                if (screen != opened) return;
+                restored = true;
+                token = stored;
+                show();
+            });
+        });
     }
 
     private void login() {
-        LinearLayout page = page("Вход бота", app.homeAction(), this::login);
-        page.setPadding(app.dp(20), app.dp(16), app.dp(20), app.dp(20));
-        app.add(page, app.label("Добавьте своего бота Discord на сервер. Для чтения текста включите Message Content Intent в панели разработчика Discord.", 16, AndroidActivity.MUTED), 4);
-        EditText secret = app.field("Токен бота", InputType.TYPE_CLASS_TEXT
+        LinearLayout form = signInForm("Вход в Discord", app.closeAction(), this::login);
+        EditText login = app.field("Электронная почта или телефон", InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        login.setSingleLine(true);
+        login.setSaveEnabled(false);
+        app.add(form, login, 0);
+
+        EditText password = app.field("Пароль", InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        secret.setSingleLine(true);
-        secret.setSaveEnabled(false);
-        if (android.os.Build.VERSION.SDK_INT >= 26)
-            secret.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
-        app.add(page, secret, 16);
-        Button connect = app.action("Войти", true, () -> {
-            String entered = secret.getText().toString().trim();
-            if (entered.isEmpty()) {
-                status("Введите токен бота.");
+        password.setSingleLine(true);
+        password.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        password.setSaveEnabled(false);
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            login.setAutofillHints(View.AUTOFILL_HINT_USERNAME);
+            password.setAutofillHints(View.AUTOFILL_HINT_PASSWORD);
+        }
+        app.add(form, password, 8);
+
+        Button submit = app.action("Войти", true, () -> {});
+        submit.setOnClickListener(view -> {
+            String name = login.getText().toString().trim();
+            String secret = password.getText().toString();
+            if (name.isEmpty() || secret.isEmpty()) {
+                status("Введите электронную почту или телефон и пароль.");
                 return;
             }
-            status("Проверяю токен…");
-            request("account", entered, "", "", result -> {
-                token = entered;
-                secret.setText("");
-                ((android.view.inputmethod.InputMethodManager) app.getSystemService(
-                        android.content.Context.INPUT_METHOD_SERVICE))
-                        .hideSoftInputFromWindow(secret.getWindowToken(), 0);
-                guilds();
-            }, error -> status(error));
+            submit.setEnabled(false);
+            hideKeyboard(password);
+            status("Вхожу в Discord…");
+            request("login", "", name, secret, response -> {
+                submit.setEnabled(true);
+                password.setText("");
+                acceptLogin(new JSONObject(response));
+            }, error -> {
+                submit.setEnabled(true);
+                status(error);
+            });
         });
-        app.add(page, connect, 12);
+        app.add(form, submit, 20);
+    }
+
+    private void acceptLogin(JSONObject response) throws JSONException {
+        if ("mfa".equals(response.getString("state"))) {
+            secondFactor(response);
+            return;
+        }
+        if (!"ready".equals(response.getString("state"))) {
+            status("Discord не завершил вход.");
+            return;
+        }
+        String authenticated = response.getString("token");
+        token = authenticated;
+        app.chatWorker.execute(() -> session.save(authenticated));
+        privateChats();
+    }
+
+    private void secondFactor(JSONObject challenge) throws JSONException {
+        String ticket = challenge.getString("ticket");
+        LinearLayout form = signInForm("Подтверждение входа", this::login, this::login);
+        List<String> names = new ArrayList<>();
+        List<String> modes = new ArrayList<>();
+        if (challenge.optBoolean("totp")) {
+            names.add("Приложение-аутентификатор");
+            modes.add("totp");
+        }
+        if (challenge.optBoolean("sms")) {
+            names.add("SMS");
+            modes.add("sms");
+        }
+        if (challenge.optBoolean("backup")) {
+            names.add("Резервный код");
+            modes.add("backup");
+        }
+        Spinner methods = new Spinner(app);
+        ArrayAdapter<String> labels = new ArrayAdapter<>(app, android.R.layout.simple_spinner_item, names);
+        labels.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        methods.setAdapter(labels);
+        methods.setContentDescription("Способ подтверждения");
+        methods.setMinimumHeight(app.dp(48));
+        app.add(form, methods, 0);
+        EditText code = app.field("Код подтверждения", InputType.TYPE_CLASS_NUMBER);
+        code.setSingleLine(true);
+        code.setSaveEnabled(false);
+        if (android.os.Build.VERSION.SDK_INT >= 26) code.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        app.add(form, code, 8);
+        Button sms = app.action("Отправить код по SMS", false, () -> {});
+        Button submit = app.action("Подтвердить", true, () -> {});
+        sms.setOnClickListener(view -> {
+            methods.setEnabled(false);
+            sms.setEnabled(false);
+            submit.setEnabled(false);
+            status("Запрашиваю SMS…");
+            request("sms_send", "", ticket, "", response -> {
+                methods.setEnabled(true);
+                submit.setEnabled(true);
+                status("Введите код из SMS.");
+                sms.postDelayed(() -> sms.setEnabled(true), 30000);
+            }, error -> {
+                methods.setEnabled(true);
+                submit.setEnabled(true);
+                sms.setEnabled(true);
+                status(error);
+            });
+        });
+        submit.setOnClickListener(view -> {
+            String value = code.getText().toString().trim();
+            if (value.isEmpty()) {
+                status("Введите код подтверждения.");
+                return;
+            }
+            String mode = modes.get(methods.getSelectedItemPosition());
+            submit.setEnabled(false);
+            methods.setEnabled(false);
+            hideKeyboard(code);
+            status("Проверяю код…");
+            request(mode, "", ticket, value, response -> {
+                submit.setEnabled(true);
+                methods.setEnabled(true);
+                code.setText("");
+                acceptLogin(new JSONObject(response));
+            }, error -> {
+                submit.setEnabled(true);
+                methods.setEnabled(true);
+                status(error);
+            });
+        });
+        methods.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String mode = modes.get(position);
+                sms.setVisibility("sms".equals(mode) ? View.VISIBLE : View.GONE);
+                code.setInputType("backup".equals(mode) ? InputType.TYPE_CLASS_TEXT : InputType.TYPE_CLASS_NUMBER);
+                code.setText("");
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        sms.setVisibility(modes.contains("sms") && "sms".equals(modes.get(0)) ? View.VISIBLE : View.GONE);
+        app.add(form, sms, 8);
+        app.add(form, submit, 12);
+    }
+
+    private LinearLayout signInForm(String title, Runnable back, Runnable resume) {
+        LinearLayout page = page(title, back, resume);
+        app.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        ScrollView scroll = new ScrollView(app);
+        scroll.setFillViewport(true);
+        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout form = app.column();
+        form.setPadding(app.dp(22), app.dp(16), app.dp(22), app.dp(24));
+        form.setFocusableInTouchMode(true);
+        scroll.addView(form);
+        form.requestFocus();
+        return form;
+    }
+
+    private void hideKeyboard(EditText field) {
+        android.view.inputmethod.InputMethodManager keyboard =
+                app.getSystemService(android.view.inputmethod.InputMethodManager.class);
+        if (keyboard != null) keyboard.hideSoftInputFromWindow(field.getWindowToken(), 0);
+    }
+
+    private void privateChats() {
+        LinearLayout page = page("Личные сообщения", app.closeAction(), this::privateChats);
+        tabs(page, true);
+        ListView list = new ListView(app);
+        page.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        status("Загружаю переписки…");
+        request("private", token, "", "", response -> {
+            List<JSONObject> chats = entries(new JSONArray(response));
+            chats.removeIf(entry -> entry.optInt("type") != 1 && entry.optInt("type") != 3);
+            chats.sort((a, b) -> compareIds(b.optString("last_message_id", ""),
+                    a.optString("last_message_id", "")));
+            status(chats.isEmpty() ? "Личных переписок пока нет." : "");
+            choices(list, chats, false, chat -> channel(this::privateChats, chat, conversationTitle(chat)));
+        }, this::status);
+    }
+
+    private void tabs(LinearLayout page, boolean direct) {
+        LinearLayout bar = new LinearLayout(app);
+        bar.setPadding(app.dp(12), app.dp(6), app.dp(12), app.dp(8));
+        bar.addView(app.action("Личные", direct, () -> { if (!direct) privateChats(); }),
+                new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1);
+        right.setMarginStart(app.dp(8));
+        bar.addView(app.action("Серверы", !direct, () -> { if (direct) guilds(); }), right);
+        page.addView(bar);
     }
 
     private void guilds() {
-        LinearLayout page = page("Серверы бота", app.homeAction(), this::guilds);
-        Button logout = app.action("Выйти из бота", false, () -> {
-            token = "";
-            login();
-        });
+        LinearLayout page = page("Серверы", this::privateChats, this::guilds);
+        tabs(page, false);
         status("Загружаю серверы…");
-        ListView choices = new ListView(app);
-        page.addView(choices, new LinearLayout.LayoutParams(-1, 0, 1));
-        page.addView(logout);
+        ListView list = new ListView(app);
+        page.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
         request("guilds", token, "", "", response -> {
             List<JSONObject> servers = entries(new JSONArray(response));
             servers.sort(Comparator.comparing(entry -> entry.optString("name"), String.CASE_INSENSITIVE_ORDER));
-            status(servers.isEmpty() ? "Добавьте бота на сервер Discord, затем откройте этот экран снова." : "");
-            choices(choices, servers, false, this::channels);
+            status(servers.isEmpty() ? "Нет серверов для этого аккаунта." : "");
+            choices(list, servers, false, this::channels);
         }, this::status);
+    }
+
+    void logout() {
+        token = "";
+        app.chatWorker.execute(session::clear);
+        login();
+    }
+
+    boolean signedIn() { return !token.isEmpty(); }
+
+    private static String conversationTitle(JSONObject conversation) {
+        if (!conversation.isNull("name") && !conversation.optString("name").isEmpty())
+            return conversation.optString("name");
+        JSONArray recipients = conversation.optJSONArray("recipients");
+        List<String> names = new ArrayList<>();
+        if (recipients != null) {
+            for (int i = 0; i < recipients.length(); i++) {
+                JSONObject person = recipients.optJSONObject(i);
+                if (person == null) continue;
+                String name = displayName(person);
+                if (!name.isEmpty()) names.add(name);
+            }
+        }
+        return names.isEmpty() ? "Личная переписка" : android.text.TextUtils.join(", ", names);
+    }
+
+    private static String displayName(JSONObject user) {
+        if (user == null) return "";
+        String name = user.isNull("global_name") ? "" : user.optString("global_name");
+        return name.isEmpty() ? user.optString("username") : name;
     }
 
     private void channels(JSONObject guild) {
@@ -106,20 +315,21 @@ final class NativeChat {
             channels.removeIf(entry -> entry.optInt("type") != 0 && entry.optInt("type") != 5);
             channels.sort(Comparator.comparingInt(entry -> entry.optInt("position")));
             status(channels.isEmpty() ? "Текстовые каналы не найдены." : "");
-            choices(list, channels, true, channel -> channel(guild, channel));
+            choices(list, channels, true, entry -> channel(() -> channels(guild), entry,
+                    "# " + entry.optString("name")));
         }, this::status);
     }
 
     private void choices(ListView list, List<JSONObject> items, boolean channels, Choice choose) {
         ArrayAdapter<String> names = new ArrayAdapter<>(app, android.R.layout.simple_list_item_1);
-        for (JSONObject item : items) names.add((channels ? "# " : "") + item.optString("name"));
+        for (JSONObject item : items) names.add((channels ? "# " : "") + conversationTitle(item));
         list.setAdapter(names);
         list.setOnItemClickListener((parent, row, index, id) -> choose.open(items.get(index)));
     }
 
-    private void channel(JSONObject guild, JSONObject channel) {
-        Runnable open = () -> channel(guild, channel);
-        LinearLayout page = page("# " + channel.optString("name"), () -> channels(guild), open);
+    private void channel(Runnable back, JSONObject channel, String title) {
+        Runnable open = () -> channel(back, channel, title);
+        LinearLayout page = page(title, back, open);
         String id = channel.optString("id");
         messages.clear();
         translations.clear();
@@ -137,7 +347,7 @@ final class NativeChat {
 
         LinearLayout composer = new LinearLayout(app);
         composer.setPadding(app.dp(8), app.dp(4), app.dp(8), app.dp(4));
-        EditText draft = app.field("Сообщение от имени бота",
+        EditText draft = app.field("Сообщение",
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         draft.setMaxLines(4);
         composer.addView(draft, new LinearLayout.LayoutParams(0, -2, 1));
@@ -242,6 +452,7 @@ final class NativeChat {
 
     private LinearLayout page(String title, Runnable back, Runnable refresh) {
         leave();
+        app.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout body = app.page(title, () -> {
             leave();
             back.run();
@@ -280,6 +491,13 @@ final class NativeChat {
                         if (started != screen) return;
                         try { reply.receive(response); }
                         catch (JSONException error) { failure.show("Discord вернул неизвестный формат."); }
+                    });
+                } catch (SessionExpiredException error) {
+                    app.post(() -> {
+                        if (started == screen) {
+                            logout();
+                            status(AndroidActivity.message(error));
+                        }
                     });
                 } catch (IOException | LinkageError error) {
                     app.post(() -> { if (started == screen) failure.show(AndroidActivity.message(error)); });
@@ -365,9 +583,7 @@ final class NativeChat {
         void bind(JSONObject entry) {
             String id = entry.optString("id");
             JSONObject user = entry.optJSONObject("author");
-            String name = user == null ? "" : user.optString("global_name", "");
-            if (user != null && (name.isEmpty() || "null".equals(name))) name = user.optString("username");
-            author.setText(name);
+            author.setText(displayName(user));
             String text = entry.optString("content", "");
             content.setText(text);
             content.setVisibility(text.isEmpty() ? GONE : VISIBLE);

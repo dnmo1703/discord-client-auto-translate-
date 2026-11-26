@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <application android:allowBackup="false" android:usesCleartextTraffic="false"
-        android:theme="@style/AppTheme" android:label="Discord RU Android" android:icon="@drawable/ic_launcher">
+        android:theme="@style/AppTheme" android:label="Discord RU Native" android:icon="@drawable/ic_launcher">
         <activity android:name="dev.discordru.AndroidActivity" android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

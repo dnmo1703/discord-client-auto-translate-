@@ -8,11 +8,11 @@ android {
     compileSdk 35
     ndkVersion '27.2.12479018'
     defaultConfig {
-        applicationId 'dev.discordru.android'
+        applicationId 'dev.discordru.nativeclient'
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
         ndk { abiFilters 'arm64-v8a' }
     }
     compileOptions {
@@ -41,5 +41,3 @@ def buildRust = tasks.register('buildRust', Exec) {
     commandLine new File(shared, 'tools/build-native.sh'), layout.buildDirectory.get().asFile
 }
 tasks.named('preBuild').configure { dependsOn(syncSharedJava, buildRust) }
-
-dependencies { implementation 'androidx.webkit:webkit:1.12.1' }
