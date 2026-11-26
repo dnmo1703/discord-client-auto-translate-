@@ -8,19 +8,16 @@ import android.content.ClipboardManager;
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.text.InputType;
-import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -28,20 +25,23 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
-import java.net.IDN;
-import java.nio.charset.StandardCharsets;
 
 public final class StartupProvider extends ContentProvider {
     private static final String BUTTON_TAG = "dev.discordru.translate";
-    private SharedPreferences prefs;
-    private LoopbackProxy proxy;
+    private static LoopbackProxy proxy;
+
+    static LoopbackProxy proxy() {
+        return proxy;
+    }
 
     @Override public boolean onCreate() {
         Application application = (Application) getContext().getApplicationContext();
-        prefs = application.getSharedPreferences("discord_ru", Context.MODE_PRIVATE);
+        ProxySettings settings = new ProxySettings(application);
         try {
-            proxy = new LoopbackProxy(readRelay());
-            proxy.configureClients();
+            LoopbackProxy local = new LoopbackProxy(settings.savedRelay());
+            local.setEnabled(settings.enabled());
+            local.configureClients();
+            proxy = local;
         } catch (IOException | SecurityException error) {
             Log.w("DiscordRU", "Could not start the local proxy", error);
         }
@@ -64,34 +64,46 @@ public final class StartupProvider extends ContentProvider {
     private void addButton(Activity activity) {
         ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
         if (decor.findViewWithTag(BUTTON_TAG) != null) return;
+        LinearLayout shortcuts = new LinearLayout(activity);
+        shortcuts.setTag(BUTTON_TAG);
+        shortcuts.setOrientation(LinearLayout.VERTICAL);
+        shortcuts.setElevation(dp(activity, 8));
+        addShortcut(activity, shortcuts, "РУ", "Перевод на русский", () -> showMenu(activity));
+        addShortcut(activity, shortcuts, "Прокси", "Открыть вкладку «Прокси»",
+                () -> activity.startActivity(new Intent(activity, ProxyActivity.class)));
+
+        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
+                dp(activity, 56), ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.END | Gravity.CENTER_VERTICAL);
+        layout.setMarginEnd(dp(activity, 8));
+        decor.addView(shortcuts, layout);
+    }
+
+    private static void addShortcut(Activity activity, LinearLayout shortcuts,
+                                    String title, String description, Runnable action) {
         TextView button = new TextView(activity);
-        button.setTag(BUTTON_TAG);
-        button.setText("РУ");
-        button.setContentDescription("Перевод на русский и настройки прокси");
+        button.setText(title);
+        button.setContentDescription(description);
         button.setTextColor(Color.WHITE);
-        button.setTextSize(14);
+        button.setTextSize(13);
         button.setGravity(Gravity.CENTER);
-        button.setElevation(dp(activity, 8));
+        button.setFocusable(true);
         GradientDrawable background = new GradientDrawable();
         background.setColor(0xff4338ca);
         background.setCornerRadius(dp(activity, 14));
         button.setBackground(background);
-        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
-                dp(activity, 48), dp(activity, 48), Gravity.END | Gravity.CENTER_VERTICAL);
-        layout.setMarginEnd(dp(activity, 8));
-        button.setOnClickListener(view -> showMenu(activity));
-        decor.addView(button, layout);
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 48));
+        if (shortcuts.getChildCount() > 0) layout.topMargin = dp(activity, 6);
+        button.setOnClickListener(view -> action.run());
+        shortcuts.addView(button, layout);
     }
 
     private void showMenu(Activity activity) {
-        String status = proxy == null ? "Прокси не запустился"
-                : "Прокси 127.0.0.1:" + proxy.port()
-                        + (readRelay() == null ? " · прямое подключение" : " · внешний сервер");
         new AlertDialog.Builder(activity)
-                .setTitle("Перевод и прокси")
-                .setMessage("Зажмите сообщение и выберите «Копировать текст». Затем нажмите «РУ» и «Перевести».\n\n" + status)
+                .setTitle("Перевод на русский")
+                .setMessage("Зажмите сообщение и выберите «Копировать текст». Затем нажмите «РУ» и «Перевести».")
                 .setNegativeButton("Закрыть", null)
-                .setNeutralButton("Настройки прокси", (dialog, which) -> settings(activity))
                 .setPositiveButton("Перевести", (dialog, which) -> translate(activity))
                 .show();
     }
@@ -137,93 +149,6 @@ public final class StartupProvider extends ContentProvider {
                 dialog.dismiss();
             });
         });
-    }
-
-    private void settings(Activity activity) {
-        LinearLayout fields = new LinearLayout(activity);
-        fields.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(activity, 24);
-        fields.setPadding(padding, 0, padding, 0);
-        EditText server = field(activity, fields, "Сервер, например proxy.example.org:443",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, prefs.getString("server", ""));
-        EditText username = field(activity, fields, "Имя пользователя",
-                InputType.TYPE_CLASS_TEXT, prefs.getString("username", ""));
-        EditText password = field(activity, fields, "Пароль",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, "");
-        AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle("Внешний HTTPS-прокси")
-                .setMessage("Для прямого подключения оставьте адрес пустым. Если пароль уже сохранён, оставьте поле пароля пустым, чтобы сохранить его.")
-                .setView(fields)
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Сохранить", null)
-                .show();
-        dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(view -> {
-            String address = server.getText().toString().trim();
-            String user = username.getText().toString().trim();
-            String pass = password.getText().toString();
-            if (pass.isEmpty() && address.equals(prefs.getString("server", ""))
-                    && user.equals(prefs.getString("username", ""))) {
-                pass = prefs.getString("password", "");
-            }
-            LoopbackProxy.Relay relay;
-            try {
-                relay = parseRelay(address, user, pass);
-            } catch (IllegalArgumentException error) {
-                server.setError(error.getMessage());
-                return;
-            }
-            if (relay == null) prefs.edit().clear().apply();
-            else prefs.edit().putString("server", address).putString("username", user)
-                    .putString("password", pass).apply();
-            if (proxy != null) proxy.setRelay(relay);
-            dialog.dismiss();
-            Toast.makeText(activity, "Сохранено. Перезапустите Discord, чтобы переподключить открытые соединения.",
-                    Toast.LENGTH_LONG).show();
-        });
-    }
-
-    private LoopbackProxy.Relay readRelay() {
-        try {
-            return parseRelay(prefs.getString("server", ""), prefs.getString("username", ""),
-                    prefs.getString("password", ""));
-        } catch (IllegalArgumentException error) {
-            return null;
-        }
-    }
-
-    private static LoopbackProxy.Relay parseRelay(String address, String user, String password) {
-        if (address.isEmpty()) return null;
-        String[] parts = address.split(":", -1);
-        int port = 443;
-        try {
-            if (parts.length > 2 || parts[0].isEmpty()) throw new IllegalArgumentException();
-            if (parts.length == 2) port = Integer.parseInt(parts[1]);
-            if (port < 1 || port > 65535) throw new IllegalArgumentException();
-            String host = IDN.toASCII(parts[0], IDN.USE_STD3_ASCII_RULES);
-            if (user.isEmpty() || user.indexOf(':') >= 0 || password.isEmpty()) {
-                throw new IllegalArgumentException("Введите имя без двоеточия и пароль");
-            }
-            if (user.length() + password.length() > 1024) {
-                throw new IllegalArgumentException("Слишком длинное имя или пароль");
-            }
-            String auth = Base64.encodeToString((user + ":" + password).getBytes(StandardCharsets.UTF_8),
-                    Base64.NO_WRAP);
-            return new LoopbackProxy.Relay(host, port, auth);
-        } catch (IllegalArgumentException error) {
-            if (error.getMessage() != null && (error.getMessage().startsWith("Введите")
-                    || error.getMessage().startsWith("Слишком"))) throw error;
-            throw new IllegalArgumentException("Укажите имя сервера и, при необходимости, порт");
-        }
-    }
-
-    private static EditText field(Activity activity, LinearLayout parent, String hint, int type, String text) {
-        EditText input = new EditText(activity);
-        input.setHint(hint);
-        input.setSingleLine(true);
-        input.setInputType(type);
-        input.setText(text);
-        parent.addView(input);
-        return input;
     }
 
     private static int dp(Context context, int value) {

@@ -115,10 +115,11 @@ public final class PatchPayload {
             throw new IllegalArgumentException("Expected Discord Android build 355010");
         }
         ResXmlElement app = host.getApplicationElement();
-        for (String type : List.of("provider", "service", "receiver")) {
+        for (String type : List.of("activity", "provider", "service", "receiver")) {
             for (ResXmlElement component : payload.listApplicationElementsByTag(type)) {
                 String name = AndroidManifestBlock.getAndroidNameValue(component);
                 if (name.equals("androidx.startup.InitializationProvider")) continue;
+                if (type.equals("activity") && !name.equals("dev.discordru.ProxyActivity")) continue;
                 ResXmlElement added = app.newElement(type);
                 added.fromJson(component.toJson());
                 added.recursiveAttributes().forEachRemaining(attribute -> {

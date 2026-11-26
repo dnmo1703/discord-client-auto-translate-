@@ -32,6 +32,7 @@ final class LoopbackProxy {
     private final Semaphore capacity = new Semaphore(32);
     private final ServerSocket server;
     private volatile Relay relay;
+    private volatile boolean enabled = true;
 
     static final class Relay {
         final String host;
@@ -50,6 +51,10 @@ final class LoopbackProxy {
         server = new ServerSocket();
         server.bind(new InetSocketAddress("127.0.0.1", 0), 32);
         workers.execute(this::accept);
+    }
+
+    void setEnabled(boolean enabled) {
+        this.enabled = enabled;
     }
 
     void setRelay(Relay relay) {
@@ -81,7 +86,7 @@ final class LoopbackProxy {
                 if (uri == null) throw new IllegalArgumentException("URI is required");
                 String scheme = uri.getScheme();
                 int port = uri.getPort();
-                if (discordHost(uri.getHost()) && (port == -1 || port == 443)
+                if (enabled && discordHost(uri.getHost()) && (port == -1 || port == 443)
                         && ("https".equalsIgnoreCase(scheme) || "wss".equalsIgnoreCase(scheme))) {
                     return local;
                 }
@@ -116,6 +121,10 @@ final class LoopbackProxy {
     private void handle(Socket client) {
         try {
             client.setSoTimeout(CONNECT_TIMEOUT);
+            if (!enabled) {
+                write(client, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+                return;
+            }
             String[] line = header(client.getInputStream()).split("\r\n", 2)[0].split(" ");
             if (line.length != 3 || !"CONNECT".equals(line[0]) ||
                     !line[1].matches("[A-Za-z0-9.-]{1,253}:443") ||
@@ -174,12 +183,7 @@ final class LoopbackProxy {
         try {
             transport.connect(new InetSocketAddress(relay.host, relay.port), CONNECT_TIMEOUT);
             transport.setSoTimeout(CONNECT_TIMEOUT);
-            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-            SSLSocket tls = (SSLSocket) factory.createSocket(transport, relay.host, relay.port, true);
-            SSLParameters parameters = tls.getSSLParameters();
-            parameters.setEndpointIdentificationAlgorithm("HTTPS");
-            tls.setSSLParameters(parameters);
-            tls.startHandshake();
+            SSLSocket tls = openTls(transport, relay.host, relay.port);
             write(tls, "CONNECT " + target + " HTTP/1.1\r\nHost: " + target
                     + "\r\nProxy-Authorization: Basic " + relay.authorization + "\r\n\r\n");
             if (!header(tls.getInputStream()).matches("(?s)HTTP/1\\.[01] 200(?: [^\r\n]*)?\r\n.*")) {
@@ -188,6 +192,31 @@ final class LoopbackProxy {
             return tls;
         } catch (IOException error) {
             close(transport);
+            throw error;
+        }
+    }
+
+    static void checkConnection(Relay relay) throws IOException {
+        String host = "discord.com";
+        try (Socket transport = relay == null ? connectDirect(host) : connectRelay(relay, host + ":443")) {
+            transport.setSoTimeout(CONNECT_TIMEOUT);
+            try (SSLSocket ignored = openTls(transport, host, 443)) {
+                // The handshake verifies that the selected route reaches Discord.
+            }
+        }
+    }
+
+    private static SSLSocket openTls(Socket transport, String host, int port) throws IOException {
+        SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket tls = (SSLSocket) factory.createSocket(transport, host, port, true);
+        SSLParameters parameters = tls.getSSLParameters();
+        parameters.setEndpointIdentificationAlgorithm("HTTPS");
+        tls.setSSLParameters(parameters);
+        try {
+            tls.startHandshake();
+            return tls;
+        } catch (IOException error) {
+            close(tls);
             throw error;
         }
     }
