@@ -65,6 +65,16 @@ jobs:
           af877cbff30bf0e327845eaa354b15017b65137f73e6d7c1fcb7083b696bd0ed  discord-splits/config.en.apk
           8a62eed38a796f41cfab273c963daa58c3b3b1048ca4aa9a235ab8405e91633a  discord-splits/config.xxhdpi.apk
           CHECKSUMS
+      - name: Install the matching Hermes compiler
+        run: |
+          set -euo pipefail
+          ref=250829098.0.19
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://registry.npmjs.org/hermes-compiler/-/hermes-compiler-$ref.tgz" |
+            tar -xz -C "$RUNNER_TEMP" package/hermesc/linux64-bin/hermesc
+          compiler="$RUNNER_TEMP/package/hermesc/linux64-bin/hermesc"
+          printf '%s  %s\n' '925ddf1bc2f17578e8af5df391c9d84dbd98441540fb43257aac3ef75c54b749' "$compiler" | sha256sum --check
+          printf 'HERMESC=%s\n' "$compiler" >> "$GITHUB_ENV"
       - name: Build and verify arm64 APK
         env:
           DISCORD_RU_KEYSTORE_BASE64: ${{ secrets.DISCORD_RU_KEYSTORE_BASE64 }}

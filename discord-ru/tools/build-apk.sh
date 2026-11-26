@@ -33,6 +33,7 @@ for split in "${splits[@]}"; do
 done
 
 "$root/tools/build-native.sh"
+"$root/tools/build-settings.sh"
 (cd "$root" && "$gradle" :app:assembleRelease)
 payload="$root/app/build/outputs/apk/release/app-release-unsigned.apk"
 java -jar "$editor" m -i "$input" -o "$work/host.apk"

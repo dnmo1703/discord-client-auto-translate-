@@ -109,6 +109,8 @@ public final class ProxyActivity extends Activity {
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         append(summary, status, 2);
         refreshStatus();
+        Button automatic = button("Автоматическое подключение", true);
+        append(summary, automatic, 10);
 
         LinearLayout types = panel();
         append(content, types, 16);
@@ -132,7 +134,7 @@ public final class ProxyActivity extends Activity {
         TextView serverTitle = text("Сервер", 17, TEXT);
         serverTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         server.addView(serverTitle);
-        append(server, text("Оставьте адрес пустым для автоматического подключения без внешнего прокси. Для своего прокси укажите адрес и порт.", 14, MUTED), 6);
+        append(server, text("Оставьте адрес пустым для автоматического подключения без внешнего прокси. Для внешнего прокси укажите адрес и порт, затем нажмите «Сохранить».", 14, MUTED), 6);
         host = field(server, "Адрес", "127.0.0.1", settings.host(),
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         port = field(server, "Порт", Integer.toString(protocol.defaultPort), settings.port(),
@@ -155,6 +157,18 @@ public final class ProxyActivity extends Activity {
         feedback = text("", 14, MUTED);
         feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         append(content, feedback, 8);
+        automatic.setOnClickListener(view -> {
+            settings.enableAutomatic();
+            LoopbackProxy proxy = StartupProvider.proxy();
+            if (proxy != null) {
+                proxy.setRelay(null);
+                proxy.setEnabled(true);
+            }
+            toggle.setChecked(true);
+            refreshStatus();
+            revision++;
+            message("Автоматический режим включён. Для открытых соединений перезапустите Discord.", MUTED);
+        });
 
         toggle.setOnCheckedChangeListener((view, enabled) -> {
             settings.setEnabled(enabled);
@@ -212,7 +226,12 @@ public final class ProxyActivity extends Activity {
     private void checkConnection() {
         LoopbackProxy.Relay relay;
         try {
-            relay = enteredRelay();
+            boolean sameConfiguration = protocol == settings.protocol()
+                    && host.getText().toString().trim().equals(settings.host())
+                    && port.getText().toString().trim().equals(settings.port())
+                    && username.getText().toString().trim().equals(settings.username())
+                    && password.getText().length() == 0;
+            relay = settings.automatic() && sameConfiguration ? null : enteredRelay();
         } catch (IllegalArgumentException error) {
             message(error.getMessage(), ERROR);
             return;

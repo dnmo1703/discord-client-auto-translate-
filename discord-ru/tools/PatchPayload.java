@@ -32,6 +32,7 @@ public final class PatchPayload {
                     dex.getDexClasses().forEachRemaining(cls -> hostTypes.add(cls.getKey()));
                     if ("classes.dex".equals(entry.getName())) {
                         patchMessageHolder(dex);
+                        patchSettingsEntry(dex);
                     } else if ("classes3.dex".equals(entry.getName())) {
                         patchDiscordProxySelector(dex);
                     }
@@ -99,6 +100,45 @@ public final class PatchPayload {
             hostTable.refreshFull();
             hostTable.writeBytes(output.resolve("resources.arsc").toFile());
         }
+    }
+
+    private static void patchSettingsEntry(DexFile dex) throws Exception {
+        String reactor = "Lcom/facebook/react/runtime/ReactInstance;";
+        var instance = dex.getDexClass(TypeKey.of(reactor));
+        var assets = instance.getDeclaredMethod(MethodKey.parse(reactor
+                + "->a(" + reactor + "Landroid/content/res/AssetManager;Ljava/lang/String;)V"));
+        var file = instance.getDeclaredMethod(MethodKey.parse(reactor
+                + "->b(" + reactor + "Ljava/lang/String;Ljava/lang/String;)V"));
+        if (assets.getInstructionsCount() != 2 || file.getInstructionsCount() != 2
+                || !"loadJSBundleFromAssets".equals(assets.getInstruction(0).getKeyAsMethod().getName())
+                || !"loadJSBundleFromFile".equals(file.getInstruction(0).getKeyAsMethod().getName())) {
+            throw new IllegalStateException("Unexpected Discord React bundle loaders");
+        }
+        assets.getInstruction(0).replaceFromSmaliAll("""
+                invoke-static {p0, p1}, Ldev/discordru/StartupProvider;->loadSettings(Ljava/lang/Object;Landroid/content/res/AssetManager;)V
+                invoke-direct {p0, p1, p2}, Lcom/facebook/react/runtime/ReactInstance;->loadJSBundleFromAssets(Landroid/content/res/AssetManager;Ljava/lang/String;)V
+                """);
+        file.ensureLocalRegistersCount(1);
+        file.getInstruction(0).replaceFromSmaliAll("""
+                const/4 v0, 0
+                invoke-static {p0, v0}, Ldev/discordru/StartupProvider;->loadSettings(Ljava/lang/Object;Landroid/content/res/AssetManager;)V
+                invoke-direct {p0, p1, p2}, Lcom/facebook/react/runtime/ReactInstance;->loadJSBundleFromFile(Ljava/lang/String;Ljava/lang/String;)V
+                """);
+
+        var links = dex.getDexClass(TypeKey.of("Lcom/facebook/react/modules/intent/IntentModule;"));
+        var open = links.getDeclaredMethod(MethodKey.parse(
+                "Lcom/facebook/react/modules/intent/IntentModule;->openURL(Ljava/lang/String;Lcom/facebook/react/bridge/Promise;)V"));
+        var intentConstructor = MethodKey.parse(
+                "Landroid/content/Intent;-><init>(Ljava/lang/String;Landroid/net/Uri;)V");
+        var intents = open.getInstructionsIfMethodKey(intentConstructor::equals);
+        if (!intents.hasNext()) throw new IllegalStateException("Discord link intent is missing");
+        var intent = intents.next();
+        if (intents.hasNext() || intent.getRegister() != 0) {
+            throw new IllegalStateException("Unexpected Discord link intent");
+        }
+        intent.createNextFromSmali(
+                "invoke-static {v0}, Ldev/discordru/StartupProvider;->resolveSettingsIntent(Landroid/content/Intent;)V");
+        dex.refreshFull();
     }
 
     private static void patchDiscordProxySelector(DexFile dex) {

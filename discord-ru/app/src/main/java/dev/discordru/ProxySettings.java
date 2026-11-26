@@ -47,7 +47,16 @@ final class ProxySettings {
         return !prefs.getString("password", "").isEmpty();
     }
 
+    boolean automatic() {
+        return prefs.getBoolean("automatic", host().isEmpty());
+    }
+
+    void enableAutomatic() {
+        prefs.edit().putBoolean("enabled", true).putBoolean("automatic", true).apply();
+    }
+
     LoopbackProxy.Relay savedRelay() {
+        if (automatic()) return null;
         try {
             return readRelay(protocol(), host(), port(), username(), "");
         } catch (IllegalArgumentException error) {
@@ -114,7 +123,8 @@ final class ProxySettings {
     }
 
     void save(LoopbackProxy.Protocol protocol, LoopbackProxy.Relay relay) {
-        SharedPreferences.Editor edit = prefs.edit().remove("server").putString("protocol", protocol.name());
+        SharedPreferences.Editor edit = prefs.edit().remove("server").putString("protocol", protocol.name())
+                .putBoolean("automatic", relay == null);
         if (relay == null) {
             edit.remove("host").remove("port").remove("username").remove("password");
         } else {

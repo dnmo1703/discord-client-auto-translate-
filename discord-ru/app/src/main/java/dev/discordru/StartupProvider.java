@@ -6,6 +6,7 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetManager;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -18,17 +19,41 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 
 public final class StartupProvider extends ContentProvider {
     private static final String BUTTON_TAG = "dev.discordru.proxy";
     private static LoopbackProxy proxy;
+    private static volatile Application application;
 
     static LoopbackProxy proxy() {
         return proxy;
     }
 
+    public static void loadSettings(Object instance, AssetManager assets) {
+        Application app = application;
+        if (assets == null && app != null) assets = app.getAssets();
+        if (assets == null) return;
+        try {
+            Method loader = instance.getClass().getDeclaredMethod(
+                    "loadJSBundleFromAssets", AssetManager.class, String.class);
+            loader.setAccessible(true);
+            loader.invoke(instance, assets, "assets://discordru-settings.hbc");
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            Log.w("DiscordRU", "Could not load the settings entry", error);
+        }
+    }
+
+    public static void resolveSettingsIntent(Intent intent) {
+        Application app = application;
+        if (app != null && "discordru-internal://proxy".equals(intent.getDataString())) {
+            intent.setClass(app, ProxyActivity.class);
+            intent.setData(null);
+        }
+    }
+
     @Override public boolean onCreate() {
-        Application application = (Application) getContext().getApplicationContext();
+        application = (Application) getContext().getApplicationContext();
         ProxySettings settings = new ProxySettings(application);
         try {
             LoopbackProxy local = new LoopbackProxy(settings.savedRelay());

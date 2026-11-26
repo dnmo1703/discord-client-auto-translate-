@@ -13,6 +13,7 @@ android {
         additionalParameters '--allow-reserved-package-id', '--package-id', '0x78'
     }
     sourceSets.main.jniLibs.srcDirs += [layout.buildDirectory.dir("generated/rustJniLibs")]
+    sourceSets.main.assets.srcDirs += [layout.buildDirectory.dir("generated/settingsAssets")]
     buildFeatures {
         buildConfig = false
     }
