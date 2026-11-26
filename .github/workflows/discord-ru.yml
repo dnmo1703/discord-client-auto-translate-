@@ -30,8 +30,10 @@ jobs:
           sdk="$RUNNER_TEMP/android-sdk"
           cli="$RUNNER_TEMP/android-commandline-tools.zip"
           mkdir -p "$sdk"
-          curl --fail --silent --show-error --location --retry 3             https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip             -o "$cli"
-          echo '2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258  ' "$cli" | sha256sum --check
+          curl --fail --silent --show-error --location --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+            -o "$cli"
+          printf '%s  %s\n' '2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258' "$cli" | sha256sum --check
           unzip -q "$cli" -d "$sdk"
           sdkmanager="$sdk/cmdline-tools/bin/sdkmanager"
           "$sdkmanager" --sdk_root="$sdk" --licenses < <(yes) > /dev/null
