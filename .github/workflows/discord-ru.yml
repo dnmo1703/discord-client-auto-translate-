@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -25,7 +25,18 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Install Android SDK components
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/android-sdk"
+          cli="$RUNNER_TEMP/android-commandline-tools.zip"
+          mkdir -p "$sdk"
+          curl --fail --silent --show-error --location --retry 3             https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip             -o "$cli"
+          echo '2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258  ' "$cli" | sha256sum --check
+          unzip -q "$cli" -d "$sdk"
+          sdkmanager="$sdk/cmdline-tools/bin/sdkmanager"
+          "$sdkmanager" --sdk_root="$sdk" --licenses < <(yes) > /dev/null
+          "$sdkmanager" --sdk_root="$sdk" 'platforms;android-35' 'build-tools;35.0.0'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
       - name: Download verified Discord 355010 splits and APKEditor
         run: |
           set -euo pipefail
