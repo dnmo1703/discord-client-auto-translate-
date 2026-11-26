@@ -3,6 +3,8 @@ import com.reandroid.arsc.chunk.xml.AndroidManifestBlock;
 import com.reandroid.arsc.chunk.xml.ResXmlElement;
 import com.reandroid.arsc.value.ValueType;
 import com.reandroid.dex.key.KeyPair;
+import com.reandroid.dex.key.MethodKey;
+import com.reandroid.dex.model.DexInstruction;
 import com.reandroid.dex.key.TypeKey;
 import com.reandroid.dex.model.DexDirectory;
 import com.reandroid.dex.model.DexFile;
@@ -26,7 +28,14 @@ public final class PatchPayload {
             Set<TypeKey> hostTypes = new HashSet<>();
             for (ZipEntry entry : dexEntries(host)) {
                 try (InputStream in = host.getInputStream(entry)) {
-                    DexFile.read(in).getDexClasses().forEachRemaining(cls -> hostTypes.add(cls.getKey()));
+                    DexFile dex = DexFile.read(in);
+                    dex.getDexClasses().forEachRemaining(cls -> hostTypes.add(cls.getKey()));
+                    if ("classes.dex".equals(entry.getName())) {
+                        patchMessageHolder(dex);
+                        Path patched = output.resolve(entry.getName());
+                        dex.write(patched.toFile());
+                        DexFile.read(patched.toFile());
+                    }
                 }
             }
 
@@ -86,6 +95,44 @@ public final class PatchPayload {
             hostTable.refreshFull();
             hostTable.writeBytes(output.resolve("resources.arsc").toFile());
         }
+    }
+
+    private static void patchMessageHolder(DexFile dex) throws Exception {
+        var holder = dex.getDexClass(TypeKey.of("Ltc/s0;"));
+        var constructor = holder.getDeclaredMethod(MethodKey.parse(
+                "Ltc/s0;-><init>(Lcom/discord/chat/presentation/message/view/MessageContentView;)V"));
+        var callSuper = constructor.getInstruction(0);
+        if (constructor.getInstructionsCount() != 3
+                || !MethodKey.parse("Ltc/t0;-><init>(Landroid/view/View;)V").equals(callSuper.getKey())) {
+            throw new IllegalStateException("Unexpected Discord message holder constructor");
+        }
+        constructor.ensureLocalRegistersCount(1);
+        callSuper = constructor.getInstruction(0);
+        callSuper.replaceFromSmaliAll("""
+                invoke-static {p1}, Ldev/discordru/InlineTranslation;->wrap(Landroid/widget/TextView;)Landroid/view/View;
+                move-result-object v0
+                invoke-direct {p0, v0}, Ltc/t0;-><init>(Landroid/view/View;)V
+                """);
+
+        var binders = holder.getDeclaredMethods(method -> method.getName().equals("v")
+                && method.getKey().getParameter(0).equals(TypeKey.of("Lbc/g0;")));
+        if (!binders.hasNext()) throw new IllegalStateException("Discord message binder is missing");
+        var binder = binders.next();
+        var renderCalls = binder.getInstructionsIfMethodKey(key -> key.getName().equals("d")
+                && key.getDeclaring().equals(
+                        TypeKey.of("Lcom/discord/chat/presentation/message/view/MessageContentView;")));
+        if (!renderCalls.hasNext()) throw new IllegalStateException("Discord message renderer is missing");
+        DexInstruction render = renderCalls.next();
+        if (binders.hasNext() || renderCalls.hasNext() || render.getRegister() != 1
+                || !render.getNext().getOpcode().getName().equals("return-void")) {
+            throw new IllegalStateException("Unexpected Discord message binder");
+        }
+        render.createNextFromSmaliAll("""
+                move-object/from16 v2, p1
+                iget-object v2, v2, Lbc/g0;->d:Ljava/lang/String;
+                invoke-static {v1, v2}, Ldev/discordru/InlineTranslation;->bind(Landroid/widget/TextView;Ljava/lang/String;)V
+                """);
+        dex.refreshFull();
     }
 
     private static List<ZipEntry> dexEntries(ZipFile apk) {
