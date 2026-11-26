@@ -45,10 +45,11 @@ final class DeviceSession {
             Cipher cipher = Cipher.getInstance(CIPHER);
             cipher.init(Cipher.ENCRYPT_MODE, key(store(), true));
             byte[] encrypted = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
-            return preferences.edit()
+            preferences.edit()
                     .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
                     .putString("session", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                    .commit();
+                    .apply();
+            return true;
         } catch (Exception error) {
             return false;
         }

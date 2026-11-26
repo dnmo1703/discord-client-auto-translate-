@@ -126,7 +126,10 @@ final class NativeChat {
         }
         String authenticated = response.getString("token");
         token = authenticated;
-        app.chatWorker.execute(() -> session.save(authenticated));
+        if (!session.save(authenticated)) {
+            android.widget.Toast.makeText(app, "Не удалось сохранить сеанс после закрытия приложения.",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
         privateChats();
     }
 
@@ -277,7 +280,7 @@ final class NativeChat {
 
     void logout() {
         token = "";
-        app.chatWorker.execute(session::clear);
+        session.clear();
         login();
     }
 

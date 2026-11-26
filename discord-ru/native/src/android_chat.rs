@@ -26,7 +26,7 @@ fn client(port: i32, revision: i32) -> Result<Client, String> {
         .no_proxy()
         .https_only(true)
         .redirect(Policy::none())
-        .user_agent("Discord RU Native Android/0.2.0")
+        .user_agent("Discord RU Native Android/0.2.1")
         .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(22));
     if (1..=65535).contains(&port) {

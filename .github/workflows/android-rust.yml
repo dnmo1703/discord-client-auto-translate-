@@ -72,7 +72,7 @@ jobs:
             exit 1
           fi
           tools="$ANDROID_HOME/build-tools/35.0.0"
-          apk=dist/Discord-RU-Native-0.2.0-arm64.apk
+          apk=dist/Discord-RU-Native-0.2.1-arm64.apk
           mkdir -p dist
           "$tools/apksigner" sign --ks "$store" --ks-key-alias discordru \
             --ks-pass env:ANDROID_RUST_KEYSTORE_PASSWORD --v4-signing-enabled false \
@@ -86,7 +86,7 @@ jobs:
           (cd dist && sha256sum ./*.apk > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: Discord-RU-Native-0.2.0-arm64
+          name: Discord-RU-Native-0.2.1-arm64
           path: dist/
           if-no-files-found: error
           compression-level: 0
@@ -100,18 +100,18 @@ jobs:
     steps:
       - uses: actions/download-artifact@v5
         with:
-          name: Discord-RU-Native-0.2.0-arm64
+          name: Discord-RU-Native-0.2.1-arm64
       - name: Publish the signed preview
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sha256sum -c SHA256SUMS
-          tag=android-rust-0.2.0
+          tag=android-rust-0.2.1
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             exit 0
           fi
-          gh release create "$tag" Discord-RU-Native-0.2.0-arm64.apk SHA256SUMS \
+          gh release create "$tag" Discord-RU-Native-0.2.1-arm64.apk SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "Discord RU Native 0.2.0" \
+            --title "Discord RU Native 0.2.1" \
             --notes "Экспериментальный нативный клиент с ядром на Rust, Android 7.0 и новее (ARM64). Вход в личный аккаунт через внутренний API Discord, список переписок и серверов, локальный прокси и перевод сообщений. Если Discord потребует CAPTCHA, вход в этой сборке остановится."
