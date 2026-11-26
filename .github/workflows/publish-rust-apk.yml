@@ -1,0 +1,50 @@
+name: Publish Discord RU Rust preview
+
+on:
+  push:
+    branches: [discord-ru-355-10]
+    paths: [.github/workflows/publish-rust-apk.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: Discord-RU-355.10-arm64
+          run-id: 45795976483
+          github-token: ${{ github.token }}
+      - name: Publish verified APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag=discord-ru-355.10-rust
+          apk=Discord-RU-355.10-arm64-rust.apk
+          sha=9a9e46c0bd9af024f9ff584988f6d27a47326c1b85f1d78eadf913a48accf147
+          mv Discord-RU-355.10-arm64.apk "$apk"
+          printf '%s  %s\n' "$sha" "$apk" | sha256sum --check
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          Тестовая сборка Discord RU 355.10 для ARM64, Android 7.0+.
+
+          - Прокси SOCKS5, HTTP CONNECT и HTTPS CONNECT и запросы перевода выполняются в модуле Rust.
+          - Для перевода укажите HTTPS-адрес LibreTranslate или совместимого сервера. Текст отправляется на этот сервер по нажатию «Перевести». Языковые модели на телефон не скачиваются.
+          - Если сеть блокирует Discord, нужен доступный прокси, через который Discord открывается.
+          - APK подписан тестовым ключом. При конфликте подписи Android потребует удалить установленный Discord.
+
+          [Сборка и тесты в GitHub Actions](https://github.com/dnmo1703/discord-client-auto-translate-/actions/runs/45795976483)
+          NOTES
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" "$apk" \
+              --target 24b919a0a2bb8fcf23e68e28fc3d3c3e113b85f3 \
+              --title 'Discord RU 355.10 · Rust' --notes-file "$RUNNER_TEMP/notes.md" --prerelease
+          fi
+          gh api "repos/$GH_REPO/releases/tags/$tag" |
+            jq -e --arg name "$apk" --arg digest "sha256:$sha" \
+              '.assets[] | select(.name == $name and .state == "uploaded" and .digest == $digest)' >/dev/null
