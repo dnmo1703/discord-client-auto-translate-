@@ -238,7 +238,7 @@ public final class ProxyActivity extends Activity {
                 if (issue == null) {
                     message("Подключение к Discord прошло проверку.", SUCCESS);
                 } else if (relay == null) {
-                    message("Автоматическое подключение не прошло. Если сеть блокирует IP-адреса Discord, укажите внешний прокси.", ERROR);
+                    message(issue + " Если сеть блокирует IP-адреса Discord, укажите внешний прокси.", ERROR);
                 } else {
                     message("Не удалось подключиться через прокси. " + issue, ERROR);
                 }

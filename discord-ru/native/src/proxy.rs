@@ -252,8 +252,15 @@ async fn open_tls<T: AsyncRead + AsyncWrite + Unpin>(
 
 pub(crate) async fn check(relay: Option<&Relay>) -> io::Result<()> {
     let host = "discord.com";
+    let stream = timeout(CONNECT_TIMEOUT, connect(relay, host, None))
+        .await
+        .map_err(|_| invalid("Истекло время ожидания TCP-соединения."))?;
+    let mut stream = match (relay, stream) {
+        (_, Ok(stream)) => stream,
+        (None, Err(_)) => return Err(invalid("Не удалось открыть TCP-соединение с Discord.")),
+        (Some(_), Err(error)) => return Err(error),
+    };
     timeout(CONNECT_TIMEOUT, async {
-        let mut stream = connect(relay, host, None).await?;
         if relay.is_some() {
             open_tls(stream, host).await?;
         } else {
@@ -273,7 +280,9 @@ pub(crate) async fn check(relay: Option<&Relay>) -> io::Result<()> {
         }
         Ok(())
     })
-    .await?
+    .await
+    .map_err(|_| invalid("Истекло время ожидания TLS-ответа Discord."))?
+    .map_err(|_| invalid("TCP-соединение открылось, но проверка TLS не прошла."))
 }
 
 async fn read_header(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<String> {
