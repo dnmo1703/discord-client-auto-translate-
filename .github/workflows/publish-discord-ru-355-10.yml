@@ -1,0 +1,59 @@
+name: Publish Discord RU 355.10
+
+on:
+  push:
+    branches: [discord-ru-355-10]
+    paths: [.github/workflows/publish-discord-ru-355-10.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-discord-ru-355-10
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified Actions build
+        uses: actions/download-artifact@v5
+        with:
+          name: Discord-RU-355.10-arm64
+          run-id: 45787799307
+          github-token: ${{ github.token }}
+      - name: Replace the APK in the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          apk=Discord-RU-355.10-arm64.apk
+          expected_sha=5a96272411acff5fa2fcbd3d5e63ab8f53f051ad3fd44955239ba83abfb7247f
+          printf '%s  %s\n' "$expected_sha" "$apk" | sha256sum --check
+          release_api="repos/$GH_REPO/releases/tags/latest"
+          release=$(gh api "$release_api")
+          jq -e '.id == 458998187' <<< "$release" > /dev/null
+          if ! jq -e --arg name "$apk" '.assets[] | select(.name == $name)' <<< "$release" > /dev/null; then
+            gh release upload latest "$apk"
+          fi
+          release=$(gh api "$release_api")
+          jq -e --arg name "$apk" --arg digest "sha256:$expected_sha" \
+            '.assets[] | select(.name == $name and .state == "uploaded" and .digest == $digest)' \
+            <<< "$release" > /dev/null
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Discord RU 355.10 для устройств ARM64 с Android 7.0 и новее.
+
+          - Локальный прокси запускается вместе с Discord. Для доступа из сети, где Discord заблокирован, укажите внешний HTTPS-прокси в меню «РУ».
+          - Чтобы перевести сообщение, скопируйте его текст и нажмите «РУ» → «Перевести». Для первой загрузки языковой модели нужен интернет.
+          - APK подписан временным ключом. Android потребует переустановку, если на устройстве есть Discord с другой подписью.
+
+          [Сборка и проверка подписи в GitHub Actions](https://github.com/dnmo1703/discord-client-auto-translate-/actions/runs/45787799307)
+          NOTES
+          gh release edit latest --title 'Discord RU 355.10 (ARM64)' --notes-file "$RUNNER_TEMP/release-notes.md"
+          if jq -e '.assets[] | select(.id == 794462175 and .name == "DCProxy.apk")' <<< "$release" > /dev/null; then
+            gh api --method DELETE "repos/$GH_REPO/releases/assets/794462175"
+          fi
+          gh api "$release_api" --jq '.assets[].name'
