@@ -16,7 +16,7 @@ if [[ ! -x "$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" ]]; then
     exit 2
 fi
 
-build="$root/app/build"
+build=${1:-$root/app/build}
 cd "$root"
 cargo build --locked --manifest-path "$root/native/Cargo.toml" \
     --target "$target" --target-dir "$build/rust" --release

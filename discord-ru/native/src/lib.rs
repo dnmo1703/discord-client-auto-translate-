@@ -1,3 +1,4 @@
+mod android_chat;
 mod direct;
 mod proxy;
 

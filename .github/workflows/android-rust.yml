@@ -1,0 +1,102 @@
+name: Build Discord RU Android
+
+on:
+  push:
+    branches: [android-rust-client]
+    paths:
+      - .github/workflows/android-rust.yml
+      - android-rust/**
+      - discord-ru/native/**
+      - discord-ru/tools/build-native.sh
+      - discord-ru/app/src/main/java/dev/discordru/LoopbackProxy.java
+      - discord-ru/app/src/main/java/dev/discordru/ProxySettings.java
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android SDK and Rust
+        run: |
+          set -euo pipefail
+          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          rustup toolchain install 1.85.1 --profile minimal --target aarch64-linux-android
+      - name: Test Rust and check the translation script
+        run: |
+          set -euo pipefail
+          cargo +1.85.1 test --locked --manifest-path discord-ru/native/Cargo.toml
+          node --check android-rust/app/src/main/assets/translate.js
+      - name: Assemble ARM64 APK
+        run: gradle -p android-rust :app:assembleRelease --no-daemon
+      - name: Sign and verify APK
+        env:
+          ANDROID_RUST_KEYSTORE_BASE64: ${{ secrets.ANDROID_RUST_KEYSTORE_BASE64 }}
+          ANDROID_RUST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RUST_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          store="$RUNNER_TEMP/discord-rust.p12"
+          trap 'test ! -e "$store" || unlink "$store"' EXIT
+          if [[ -n "$ANDROID_RUST_KEYSTORE_BASE64" && -n "$ANDROID_RUST_KEYSTORE_PASSWORD" ]]; then
+            printf '%s' "$ANDROID_RUST_KEYSTORE_BASE64" | base64 --decode > "$store"
+          elif [[ -z "$ANDROID_RUST_KEYSTORE_BASE64" && -z "$ANDROID_RUST_KEYSTORE_PASSWORD" ]]; then
+            ANDROID_RUST_KEYSTORE_PASSWORD="$(openssl rand -hex 24)"
+            echo "::add-mask::$ANDROID_RUST_KEYSTORE_PASSWORD"
+            export ANDROID_RUST_KEYSTORE_PASSWORD
+            keytool -genkeypair -storetype PKCS12 -keystore "$store" -alias discordru               -keyalg RSA -keysize 3072 -validity 10000 -dname 'CN=Discord RU Android Preview'               -storepass:env ANDROID_RUST_KEYSTORE_PASSWORD
+          else
+            echo "::error::Set both signing secrets for a persistent key."
+            exit 1
+          fi
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          apk=dist/Discord-RU-Android-0.1.0-arm64.apk
+          mkdir -p dist
+          "$tools/apksigner" sign --ks "$store" --ks-key-alias discordru             --ks-pass env:ANDROID_RUST_KEYSTORE_PASSWORD --v4-signing-enabled false             --out "$apk" android-rust/app/build/outputs/apk/release/app-release-unsigned.apk
+          "$tools/apksigner" verify --verbose "$apk"
+          "$tools/zipalign" -c -P 16 -v 4 "$apk"
+          unzip -tq "$apk"
+          "$tools/aapt" dump badging "$apk" | awk '/^package:|^native-code:/'
+          unzip -p "$apk" lib/arm64-v8a/libdiscordru_native.so > "$RUNNER_TEMP/libdiscordru_native.so"
+          readelf -h "$RUNNER_TEMP/libdiscordru_native.so"
+          (cd dist && sha256sum ./*.apk > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Discord-RU-Android-0.1.0-arm64
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  publish-preview:
+    if: github.ref == 'refs/heads/android-rust-client'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: Discord-RU-Android-0.1.0-arm64
+      - name: Publish the signed preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha256sum -c SHA256SUMS
+          tag=android-rust-0.1.0
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$tag" Discord-RU-Android-0.1.0-arm64.apk SHA256SUMS             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false             --title "Discord RU Android 0.1.0"             --notes "Тестовая сборка для Android 7.0 и новее (ARM64). Личный аккаунт открывается через страницу Discord. Нативный экран текстовых каналов использует токен вашего бота. Прокси доступен из настроек. Перевод на русский работает по нажатию и использует онлайн-сервис."

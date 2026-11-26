@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Locale;
 
 public final class LoopbackProxy {
-    private static final String[] DISCORD_DOMAINS = {
+    static final String[] DISCORD_DOMAINS = {
         "discord.com", "discordapp.com", "discordapp.net", "discord.gg",
         "discord.media", "discordcdn.com"
     };
