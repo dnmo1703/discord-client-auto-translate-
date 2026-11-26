@@ -1,11 +1,12 @@
+use crate::direct;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::io::{self as aio, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, lookup_host};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
@@ -115,6 +116,13 @@ async fn handle(
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
+    if selected.relay.is_none() {
+        timeout(
+            CONNECT_TIMEOUT,
+            direct::forward_hello(&mut client, &mut upstream, &host),
+        )
+        .await??;
+    }
     aio::copy_bidirectional(&mut client, &mut upstream).await?;
     Ok(())
 }
@@ -148,7 +156,7 @@ async fn connect(
     listener: Option<SocketAddr>,
 ) -> io::Result<Transport> {
     let Some(relay) = relay else {
-        return direct(host)
+        return direct::connect(host)
             .await
             .map(|socket| Box::new(socket) as Transport);
     };
@@ -166,48 +174,6 @@ async fn connect(
         Protocol::Http | Protocol::Https => http_connect(&mut stream, relay, host).await?,
     }
     Ok(stream)
-}
-
-async fn direct(host: &str) -> io::Result<TcpStream> {
-    let mut last = invalid("No public Discord address");
-    for address in lookup_host((host, 443)).await? {
-        if !is_public(address.ip()) {
-            continue;
-        }
-        match timeout(Duration::from_secs(3), TcpStream::connect(address)).await {
-            Ok(Ok(socket)) => return Ok(socket),
-            Ok(Err(error)) => last = error,
-            Err(error) => last = error.into(),
-        }
-    }
-    Err(last)
-}
-
-fn is_public(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(ip) => {
-            let [a, b, _, _] = ip.octets();
-            !ip.is_private()
-                && !ip.is_loopback()
-                && !ip.is_link_local()
-                && !ip.is_multicast()
-                && !ip.is_broadcast()
-                && a != 0
-                && a < 240
-                && !(a == 100 && (64..=127).contains(&b))
-        }
-        IpAddr::V6(ip) => {
-            if let Some(ip) = ip.to_ipv4_mapped() {
-                return is_public(IpAddr::V4(ip));
-            }
-            let first = ip.segments()[0];
-            !ip.is_unspecified()
-                && !ip.is_loopback()
-                && !ip.is_multicast()
-                && first & 0xffc0 != 0xfe80
-                && first & 0xfe00 != 0xfc00
-        }
-    }
 }
 
 async fn http_connect(stream: &mut Transport, relay: &Relay, host: &str) -> io::Result<()> {
@@ -287,8 +253,24 @@ async fn open_tls<T: AsyncRead + AsyncWrite + Unpin>(
 pub(crate) async fn check(relay: Option<&Relay>) -> io::Result<()> {
     let host = "discord.com";
     timeout(CONNECT_TIMEOUT, async {
-        let stream = connect(relay, host, None).await?;
-        open_tls(stream, host).await?;
+        let mut stream = connect(relay, host, None).await?;
+        if relay.is_some() {
+            open_tls(stream, host).await?;
+        } else {
+            let (client, mut bridge) = aio::duplex(32 * 1024);
+            let forward = async {
+                direct::forward_hello(&mut bridge, &mut stream, host).await?;
+                aio::copy_bidirectional(&mut bridge, &mut stream).await?;
+                Ok::<(), io::Error>(())
+            };
+            tokio::select! {
+                result = open_tls(client, host) => { result?; }
+                result = forward => {
+                    result?;
+                    return Err(invalid("Прямое соединение закрылось до завершения TLS."));
+                }
+            }
+        }
         Ok(())
     })
     .await?
@@ -340,7 +322,7 @@ mod tests {
             "::ffff:127.0.0.1",
             "fd00::1",
         ] {
-            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+            assert!(!direct::is_public(ip.parse().unwrap()), "{ip}");
         }
     }
 

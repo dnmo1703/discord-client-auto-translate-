@@ -132,7 +132,7 @@ public final class ProxyActivity extends Activity {
         TextView serverTitle = text("Сервер", 17, TEXT);
         serverTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         server.addView(serverTitle);
-        append(server, text("Можно указать 127.0.0.1 для прокси, запущенного на телефоне. Пустой адрес использует сеть телефона.", 14, MUTED), 6);
+        append(server, text("Оставьте адрес пустым для автоматического подключения без внешнего прокси. Для своего прокси укажите адрес и порт.", 14, MUTED), 6);
         host = field(server, "Адрес", "127.0.0.1", settings.host(),
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         port = field(server, "Порт", Integer.toString(protocol.defaultPort), settings.port(),
@@ -238,7 +238,7 @@ public final class ProxyActivity extends Activity {
                 if (issue == null) {
                     message("Подключение к Discord прошло проверку.", SUCCESS);
                 } else if (relay == null) {
-                    message("Не удалось подключиться к Discord через сеть телефона.", ERROR);
+                    message("Автоматическое подключение не прошло. Если сеть блокирует IP-адреса Discord, укажите внешний прокси.", ERROR);
                 } else {
                     message("Не удалось подключиться через прокси. " + issue, ERROR);
                 }
@@ -260,7 +260,7 @@ public final class ProxyActivity extends Activity {
         } else {
             LoopbackProxy.Relay relay = settings.savedRelay();
             status.setText("Локальный адрес  127.0.0.1:" + proxy.port() + "\n"
-                    + (relay == null ? "Подключение через сеть телефона"
+                    + (relay == null ? "Автоматически · без внешнего прокси"
                             : protocolLabel(relay.protocol) + "  " + relay.host + ":" + relay.port));
         }
     }

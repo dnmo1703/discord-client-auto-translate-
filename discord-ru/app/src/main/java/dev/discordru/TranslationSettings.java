@@ -48,7 +48,7 @@ final class TranslationSettings {
         fields.addView(key);
         AlertDialog dialog = new AlertDialog.Builder(context)
                 .setTitle(R.string.translation_server_label)
-                .setMessage("Укажите адрес LibreTranslate. Текст будет отправляться на этот сервер только по нажатию «Перевести».")
+                .setMessage("Пустой адрес использует Google Переводчик. Можно указать свой HTTPS-адрес LibreTranslate. Текст отправляется на выбранный сервер по нажатию «Перевести».")
                 .setView(fields)
                 .setNegativeButton("Отмена", null)
                 .setPositiveButton("Сохранить", null)

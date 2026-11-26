@@ -88,10 +88,6 @@ public final class InlineTranslation {
             }
 
             TranslationSettings.Server server = TranslationSettings.read(getContext());
-            if (server.endpoint.isEmpty()) {
-                TranslationSettings.edit(getContext());
-                return;
-            }
             long currentBinding = binding;
             WeakReference<MessageRow> row = new WeakReference<>(this);
             translate.setEnabled(false);

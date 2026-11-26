@@ -1,3 +1,4 @@
+mod direct;
 mod proxy;
 
 use jni::{
@@ -166,6 +167,14 @@ async fn translate(endpoint: &str, api_key: &str, text: &str) -> Result<String, 
     if text.trim().is_empty() || text.len() > 40_000 {
         return Err("Нет текста для перевода.".into());
     }
+    let client = TRANSLATOR
+        .as_ref()
+        .map_err(|_| "Не удалось запустить перевод.")?;
+    if endpoint.is_empty() {
+        return tokio::time::timeout(Duration::from_secs(35), google_translate(client, text))
+            .await
+            .map_err(|_| "Сервер перевода не ответил вовремя.")?;
+    }
     let url = Url::parse(endpoint).map_err(|_| "Неверный адрес сервера перевода.")?;
     if url.scheme() != "https"
         || url.host_str().is_none()
@@ -176,9 +185,6 @@ async fn translate(endpoint: &str, api_key: &str, text: &str) -> Result<String, 
     {
         return Err("Укажите HTTPS-адрес сервера без параметров входа.".into());
     }
-    let client = TRANSLATOR
-        .as_ref()
-        .map_err(|_| "Не удалось запустить перевод.")?;
     let request = TranslationRequest {
         q: text,
         source: "auto",
@@ -186,7 +192,7 @@ async fn translate(endpoint: &str, api_key: &str, text: &str) -> Result<String, 
         format: "text",
         api_key,
     };
-    let mut response = client
+    let response = client
         .post(url)
         .json(&request)
         .send()
@@ -202,6 +208,16 @@ async fn translate(endpoint: &str, api_key: &str, text: &str) -> Result<String, 
             )),
         };
     }
+    let parsed: TranslationResponse = read_translation_json(response).await?;
+    if parsed.text.trim().is_empty() {
+        return Err("Сервер вернул пустой перевод.".into());
+    }
+    Ok(parsed.text)
+}
+
+async fn read_translation_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, String> {
     let mut data = Vec::new();
     while let Some(chunk) = response
         .chunk()
@@ -213,12 +229,73 @@ async fn translate(endpoint: &str, api_key: &str, text: &str) -> Result<String, 
         }
         data.extend_from_slice(&chunk);
     }
-    let parsed: TranslationResponse =
-        serde_json::from_slice(&data).map_err(|_| "Сервер вернул ответ в неизвестном формате.")?;
-    if parsed.text.trim().is_empty() {
-        return Err("Сервер вернул пустой перевод.".into());
+    serde_json::from_slice(&data).map_err(|_| "Сервер вернул ответ в неизвестном формате.".into())
+}
+
+fn split_for_google(text: &str) -> (&str, &str) {
+    const MAX_BYTES: usize = 2_300;
+    if text.len() <= MAX_BYTES {
+        return (text, "");
     }
-    Ok(parsed.text)
+    let mut end = MAX_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let soften = text[..end]
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| (index > end / 2 && ch.is_whitespace()).then_some(index));
+    text.split_at(soften.unwrap_or(end))
+}
+
+fn google_result(value: &serde_json::Value) -> Result<String, String> {
+    let segments = value
+        .get(0)
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Google Переводчик вернул ответ в неизвестном формате.")?;
+    let text: String = segments
+        .iter()
+        .filter_map(|segment| segment.get(0)?.as_str())
+        .collect();
+    if text.trim().is_empty() {
+        Err("Google Переводчик вернул пустой перевод.".into())
+    } else {
+        Ok(text)
+    }
+}
+
+async fn google_translate(client: &Client, mut remaining: &str) -> Result<String, String> {
+    let mut translated = String::new();
+    while !remaining.is_empty() {
+        let trimmed = remaining.trim_start();
+        translated.push_str(&remaining[..remaining.len() - trimmed.len()]);
+        if trimmed.is_empty() {
+            break;
+        }
+        let (chunk, rest) = split_for_google(trimmed);
+        let response = client
+            .get("https://translate.googleapis.com/translate_a/single")
+            .query(&[
+                ("client", "gtx"),
+                ("sl", "auto"),
+                ("tl", "ru"),
+                ("dt", "t"),
+                ("q", chunk),
+            ])
+            .send()
+            .await
+            .map_err(|_| "Не удалось подключиться к Google Переводчику.")?;
+        if !response.status().is_success() {
+            return Err(match response.status().as_u16() {
+                429 => "Google Переводчик ограничил число запросов. Попробуйте позже.".into(),
+                status => format!("Google Переводчик вернул HTTP {status}."),
+            });
+        }
+        let value: serde_json::Value = read_translation_json(response).await?;
+        translated.push_str(&google_result(&value)?);
+        remaining = rest;
+    }
+    Ok(translated)
 }
 
 #[unsafe(no_mangle)]
@@ -246,6 +323,32 @@ pub extern "system" fn Java_dev_discordru_TranslatorToRussian_nativeTranslate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_translation_handles_multiple_segments_and_utf8_boundaries() {
+        let response = serde_json::json!([
+            [
+                ["Привет. ", "Hello."],
+                ["До завтра!", "See you tomorrow!"],
+                [null]
+            ],
+            null,
+            "en"
+        ]);
+        assert_eq!(google_result(&response).unwrap(), "Привет. До завтра!");
+        assert!(google_result(&serde_json::json!([[]])).is_err());
+
+        let text = format!("{} {}", "🙂".repeat(501), "Friday ".repeat(400));
+        let mut remaining = text.as_str();
+        let mut chunks = Vec::new();
+        while !remaining.is_empty() {
+            let (left, right) = split_for_google(remaining);
+            assert!(!left.is_empty() && left.len() <= 2300);
+            chunks.push(left);
+            remaining = right;
+        }
+        assert_eq!(chunks.concat(), text);
+    }
 
     #[test]
     fn libretranslate_uses_russian_and_does_not_require_a_key() {
